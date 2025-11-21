@@ -4,6 +4,8 @@
 
 It's strongly suggested to set up a virtual env, pyenv or uv is preferable or a conda one if you're more acquainted with the latter. 
 
+
+
 ### 1. Clone the repository
 
 ```bash
@@ -11,6 +13,14 @@ git clone https://github.com/valerio98-lab/g1_hybrid_prior.git
 cd g1_hybrid_prior
 ```
 
+### 2. Get the dataset as a submodule
+
+```bash
+git submodule add https://huggingface.co/datasets/lvhaidong/LAFAN1_Retargeting_Dataset data_raw/LAFAN1_Retargeting_Dataset
+git submodule update --init --recursive
+```
+
+### 3. Install the repo as a package
 ```bash
 pip install -e .
 ```
@@ -33,7 +43,7 @@ g1-hybrid-prior \
 Or you may also run it via Python module execution: 
 
 ```bash
-python -m g1_hybrid_prior.cli --robot g1 --file data/g1_walk_01.csv
+python -m g1_hybrid_prior.data_test --robot g1 --file data/g1_walk_01.csv
 ```
 
 
