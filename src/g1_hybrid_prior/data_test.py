@@ -1,6 +1,7 @@
 import argparse
 import numpy as np
-from robot_cfg import load_robot_cfg
+
+from .robot_cfg import load_robot_cfg
 
 
 def inspect_g1_file(path: str, n_frames: int = 1, n_cols: int = 10):
