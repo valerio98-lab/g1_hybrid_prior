@@ -1,5 +1,6 @@
 import argparse
 import numpy as np
+from robot_cfg import load_robot_cfg
 
 
 def inspect_g1_file(path: str, n_frames: int = 1, n_cols: int = 10):
@@ -45,4 +46,6 @@ if __name__ == "__main__":
     )
 
     args = parser.parse_args()
+    file_yaml = ...
+    robot_cfg = load_robot_cfg(file_yaml, args.robot_type)
     inspect_g1_file(args.file, n_frames=args.n_frames, n_cols=args.n_cols)
