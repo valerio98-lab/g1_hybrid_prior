@@ -2,7 +2,7 @@
 
 ## Installation
 
-It's strongly suggested to set up a virtual env, pyenv or uv is preferable or a conda one if you're more acquainted with the latter. 
+It's strongly suggested to set up a virtual env; pyenv or uv is preferable but also a conda virtual env is fine if you're more acquainted with the latter. 
 
 
 ### 1. Clone the repository
