@@ -52,15 +52,29 @@ class G1HybridPriorDataset(Dataset):
         data = np.loadtxt(file_path, delimiter=",", max_rows=self.lazy_load_window, skiprows=(self.block_index * self.lazy_load_window + 1))
         self.data = data
         self.block_index += 1
-        for row in data:
-            root_pos, root_quat_xyzw, root_quat_wxyz, joints = self.__split_row__(row, self.robot_cfg)
+        for row in range(data.shape[0]):
+            root_pos, root_quat_xyzw, root_quat_wxyz, joints = self.__split_row__(data[row], self.robot_cfg)
+            next_root_pos, next_root_quat_xyzw, next_root_quat_wxyz, next_joints = self.__split_row__(data[row+1], self.robot_cfg)
+            root_lin_vel = root_pos
+            root_ang_vel = root_quat_wxyz
+            joint_velocities = joints
+            if row != data.shape[0]-1 or row != 0:
+                root_lin_vel, root_ang_vel, joint_velocities = self.__compute_velocities__(
+                    root_pos, 
+                    root_quat_wxyz, 
+                    joints, 
+                    next_root_pos, 
+                    next_root_quat_wxyz, 
+                    next_joints
+                )
             frame = {
                 "root_pos": root_pos,
                 "root_quat_xyzw": root_quat_xyzw,
                 "root_quat_wxyz": root_quat_wxyz,
                 "joints": joints,
-                "root_vel": None,
-                "joint_vel": None
+                "root_lin_vel": root_lin_vel,
+                "root_ang_vel": root_ang_vel,
+                "joint_vel": joint_velocities
             }
             self.dataset.append(frame)
 
@@ -77,8 +91,10 @@ class G1HybridPriorDataset(Dataset):
 
         return root_pos, root_quat_xyzw, root_quat_wxyz, joints
 
-    def void(self): 
-        pass
+    def __compute_velocities__(self, root_pos, root_quat_wxyz, joints, next_root_pos, next_root_quat_wxyz, next_joints): 
+        dt = 1.0 / self.robot_cfg.fps
+        
+
 
     def __len__(self):
         return len(self.data)
