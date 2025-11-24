@@ -5,7 +5,6 @@
 It's strongly suggested to set up a virtual env, pyenv or uv is preferable or a conda one if you're more acquainted with the latter. 
 
 
-
 ### 1. Clone the repository
 
 ```bash
@@ -63,4 +62,3 @@ python rerun_visualize.py
 # run the script with parameters:
 # python rerun_visualize.py --file_name dance1_subject2 --robot_type [g1|h1|h1_2]
 ```
-

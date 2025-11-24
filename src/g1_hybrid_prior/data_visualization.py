@@ -1,9 +1,8 @@
 import argparse
 import numpy as np
-from pathlib import Path
 from .robot_cfg import load_robot_cfg, RobotCfg
+from .helpers import get_project_root
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 
 
 def split_row(row: np.ndarray, robot_cfg: RobotCfg):
@@ -24,7 +23,7 @@ def inspect_robot_cfg(
     n_frames: int = 1,
 ):
 
-    data = np.loadtxt(path, delimiter=",", skiprows=1)
+    data = np.loadtxt(path, delimiter=",")
 
     if data.shape[1] != robot_cfg.expected_cols:
         raise ValueError(
@@ -35,7 +34,7 @@ def inspect_robot_cfg(
     print(
         f"{robot_cfg.name}: fps={robot_cfg.fps}, dof={robot_cfg.dof}, total_cols={robot_cfg.expected_cols}"
     )
-    n_frames = min(n_frames, robot_cfg.fps)
+    n_frames = min(n_frames, data.shape[0])
     for i in range(n_frames):
         row = data[i]
         root_pos, root_quat_xyzw, root_quat_wxyz, joints = split_row(row, robot_cfg)
@@ -76,7 +75,7 @@ if __name__ == "__main__":
     )
 
     args = parser.parse_args()
-    file_yaml = str(PROJECT_ROOT / "config" / "robots.yaml")
+    file_yaml = str(get_project_root() / "config" / "robots.yaml")
     robot_cfg = load_robot_cfg(file_yaml, args.robot_type)
 
     inspect_robot_cfg(robot_cfg, args.file, n_frames=args.n_frames)
