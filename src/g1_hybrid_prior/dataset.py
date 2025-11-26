@@ -153,4 +153,49 @@ class G1HybridPriorDataset(Dataset):
         return self.dataset[local_idx]
 
 
+
+# if __name__ == "__main__":
+#     from torch.utils.data import DataLoader
+
+#     csv_path = Path("data_raw/LAFAN1_Retargeting_Dataset/g1/dance1_subject1.csv")
+
+#     dataset = G1HybridPriorDataset(
+#         file_path=csv_path,
+#         robot="g1",
+#         lazy_load=False,          # or False to compare behaviours
+#         lazy_load_window=1000,
+#     )
+
+#     loader = DataLoader(
+#         dataset,
+#         batch_size=32,
+#         shuffle=True,            # works: it just triggers different blocks to be loaded
+#         num_workers=0,           # start with 0 to debug more easily
+#         pin_memory=False,        # True later if you move batches to GPU
+#     )
+
+#     i = 0
+#     for batch in loader:
+#         if i == 0:
+#             print(batch.keys())
+#             i += 1
+        
+#         batch = {k: v.to("cuda") for k, v in batch.items()}
+#         # dict_keys(['root_pos', 'root_quat_wxyz', 'joints',
+#         #            'root_lin_vel', 'root_ang_vel', 'joint_vel'])
+#         print(f"{batch['root_pos'].shape=}")        # torch.Size([32, 3])
+#         print(f"{batch['root_quat_wxyz'].shape=}")  # torch.Size([32, 4])
+#         print(f"{batch['joints'].shape=}")          # torch.Size([32, dof])
+#         print(f"{batch['root_lin_vel'].shape=}")   # torch.Size([32, 3])
+#         print(f"{batch['root_ang_vel'].shape=}")   # torch.Size([32,
+#         print(f"{batch['joint_vel'].shape=}")      # torch.Size([32, dof])
+#         i += 1
+#         if i == 5:
+#             break
+
+
+
+
+
+
     
