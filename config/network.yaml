@@ -1,0 +1,16 @@
+
+low_level_expert_policy: 
+  type: MLPPolicy
+  batch_size: 256
+  learning_rate: 0.0003
+  encoder: 
+    units: [1024, 1024, 512]
+    activation: relu
+
+  decoder:
+    units: [512, 1024, 1024]
+    activation: relu
+
+  critic:
+    units: [512, 256, 256]
+    activation: relu
