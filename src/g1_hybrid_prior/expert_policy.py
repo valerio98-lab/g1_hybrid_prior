@@ -1,12 +1,19 @@
 import torch
 import torch.nn as nn
+import yaml
+
+from .helpers import get_project_root
 
 class LowLevelExpertPolicy(nn.Module):
-    def __init__(self, obs_dim, goal_dim, action_dim, cfg, device=None):
+    def __init__(self, obs_dim, goal_dim, action_dim, device=None):
         super().__init__()
         if device is None:
             device = "cuda" if torch.cuda.is_available() else "cpu"
         self.device = device
+
+        cfg_path = get_project_root() / "config" / "network.yaml"    
+        with open(cfg_path, "r") as f:
+            cfg = yaml.safe_load(f)
 
         latent_dim = cfg["low_level_expert_policy"]["encoder"]["units"][-1]
 
