@@ -25,9 +25,9 @@ from g1_hybrid_prior.helpers import get_project_root
 
 def build_batch_tensors(batch: Dict[str, torch.Tensor], device: torch.device):
     """
-    Costruisce obs, goal, actions_gt a partire dal dict del DataLoader.
+    Build obs, goal, actions_gt from the DataLoader dict.
 
-    Scelte (per debug):
+    Choices (for debugging purposes):
     - obs  = [root_pos, root_quat_wxyz, joints, root_lin_vel, root_ang_vel, joint_vel]
     - goal = joints
     - actions_gt = joints (joint targets come "expert actions")
@@ -51,10 +51,8 @@ def build_batch_tensors(batch: Dict[str, torch.Tensor], device: torch.device):
         ],
         dim=-1,
     )  
-
-    # per questo debug usiamo joints sia come goal che come azione target
-    goal = joints.clone()        # (B, dof)
-    actions_gt = joints.clone()  # (B, dof)
+    goal = joints.clone()        
+    actions_gt = joints.clone() 
 
     obs = obs.to(device)
     goal = goal.to(device)
@@ -64,14 +62,13 @@ def build_batch_tensors(batch: Dict[str, torch.Tensor], device: torch.device):
 
 
 def compute_action_stats(name: str, actions: torch.Tensor):
-    """Stampa statistiche base su un tensore di azioni (B, action_dim)."""
     with torch.no_grad():
         mean = actions.mean(dim=0)
         std = actions.std(dim=0)
         min_val, _ = actions.min(dim=0)
         max_val, _ = actions.max(dim=0)
 
-        print(f"\n[{name}] stats (per joint) - primi 5 joint:")
+        print(f"\n[{name}] stats (per joint) - first 5 joints:")
         print("  mean[0:5]:", mean[:5].cpu().numpy())
         print("  std [0:5]:", std[:5].cpu().numpy())
         print("  min [0:5]:", min_val[:5].cpu().numpy())
@@ -79,7 +76,7 @@ def compute_action_stats(name: str, actions: torch.Tensor):
 
 
 def sanity_check_batch_shapes(dataset: G1HybridPriorDataset, device: torch.device):
-    """Controlla shape, NaN e costruzione obs/goal/actions su un singolo batch."""
+    """Check shapes, NaN, and construction of obs/goal/actions on a single batch."""
     print("\n=== Sanity check batch shapes ===")
     loader = DataLoader(dataset, batch_size=8, shuffle=False, num_workers=0)
 
@@ -88,9 +85,9 @@ def sanity_check_batch_shapes(dataset: G1HybridPriorDataset, device: torch.devic
         print(f"  {k}: {v.shape}")
 
     obs, goal, actions_gt = build_batch_tensors(batch, device=device)
-    print(f"\n  obs.shape:        {obs.shape}")
-    print(f"  goal.shape:       {goal.shape}")
-    print(f"  actions_gt.shape: {actions_gt.shape}")
+    print(f"\n obs.shape: {obs.shape}")
+    print(f"goal.shape: {goal.shape}")
+    print(f"actions_gt.shape: {actions_gt.shape}")
 
     # check NaN / inf
     assert torch.isfinite(obs).all(), "NaN/Inf in obs"
@@ -108,12 +105,11 @@ def overfit_mini_subset(
     lr: float = 3e-4,
 ):
     """
-    Test: il modello riesce a overfittare una mini-porzione del dataset?
-    Se no, quasi sicuramente c'è un bug nel wiring.
+    Test: can the model overfit a small portion of the dataset?
     """
     print("\n=== Overfit mini-subset test ===")
 
-    # Costruiamo una mini-subset
+    # Build a mini-subset
     indices = list(range(min(num_samples, len(dataset))))
     subset = Subset(dataset, indices)
     loader = DataLoader(subset, batch_size=32, shuffle=True, num_workers=0)
@@ -170,8 +166,8 @@ def overfit_mini_subset(
         diff = mu_pred - actions_gt
         joint_mse = (diff ** 2).mean(dim=0)  # per joint
 
-        print(f"\n  Final mini-subset loss: {loss:.6f}")
-        print("  MSE per joint (primi 5):", joint_mse[:5].cpu().numpy())
+        print(f"\n Final mini-subset loss: {loss:.6f}")
+        print("  MSE per joint (first 5):", joint_mse[:5].cpu().numpy())
 
         compute_action_stats("GT actions (mini-subset)", actions_gt)
         compute_action_stats("Pred actions (mini-subset)", mu_pred)
@@ -189,20 +185,20 @@ def train_full_debug(
     log_interval: int = 20,
 ):
     """
-    Mini training "full dataset" per vedere trend della loss e qualche diagnostica extra.
+    Mini training "full dataset" to see the loss trend and some extra diagnostics.
     """
     print("\n=== Full-dataset debug training ===")
 
     loader = DataLoader(dataset, batch_size=batch_size, shuffle=True, num_workers=0)
 
-    # Determiniamo le dimensioni da una batch
+    # Determine dimensions from a batch
     first_batch = next(iter(loader))
     obs_ex, goal_ex, actions_gt_ex = build_batch_tensors(first_batch, device=device)
     obs_dim = obs_ex.shape[-1]
     goal_dim = goal_ex.shape[-1]
     action_dim = actions_gt_ex.shape[-1]
 
-    print(f"  obs_dim = {obs_dim}, goal_dim = {goal_dim}, action_dim = {action_dim}")
+    print(f"obs_dim = {obs_dim}, goal_dim = {goal_dim}, action_dim = {action_dim}")
 
     # Ricostruiamo il loader (il primo iter l'abbiamo consumato)
     loader = DataLoader(dataset, batch_size=batch_size, shuffle=True, num_workers=0)
@@ -247,7 +243,7 @@ def train_full_debug(
                     )
 
         avg_loss = running_loss / max(1, num_batches)
-        print(f"  >>> [Epoch {epoch:02d}] avg loss: {avg_loss:.6f}")
+        print(f">>> [Epoch {epoch:02d}] avg loss: {avg_loss:.6f}")
 
     # Diagnostica su un batch finale
     policy.eval()
@@ -261,7 +257,7 @@ def train_full_debug(
         joint_mse = (diff ** 2).mean(dim=0)
 
         print(f"\n  Final eval loss (full dataset): {loss:.6f}")
-        print("  MSE per joint (primi 5):", joint_mse[:5].cpu().numpy())
+        print("MSE per joint (primi 5):", joint_mse[:5].cpu().numpy())
 
         compute_action_stats("GT actions (full batch)", actions_gt)
         compute_action_stats("Pred actions (full batch)", mu_pred)
@@ -273,12 +269,12 @@ def train_full_debug(
         loss_shuffled = mse_loss(mu_pred_shuffled, actions_gt).item()
 
         print(
-            f"\n  Loss con goal normale:   {loss:.6f}\n"
-            f"  Loss con goal shufflato: {loss_shuffled:.6f}"
+            f"\n Loss with normal goal:   {loss:.6f}\n"
+            f"Loss with shuffled goal: {loss_shuffled:.6f}"
         )
-        print("  (Idealmente la loss con goal shufflato dovrebbe essere più alta.)")
+        print("(Ideally the loss with a shuffled goal should be higher.)")
 
-    print("=== Fine full-dataset debug training ===\n")
+        print("=== End of full-dataset debug training ===\n")
 
 
 def main():
@@ -289,31 +285,31 @@ def main():
         "--csv_path",
         type=str,
         default=str(root / "data_raw" / "LAFAN1_Retargeting_Dataset" / "g1" / "dance1_subject1.csv"),
-        help="Percorso al CSV del dataset retargeted.",
+        help="Path to the retargeted dataset CSV.",
     )
     parser.add_argument(
         "--robot",
         type=str,
         default="g1",
-        help="Nome del robot definito in robots.yaml (default: g1).",
+        help="Name of the robot defined in robots.yaml (default: g1).",
     )
     parser.add_argument(
         "--epochs_mini",
         type=int,
         default=20,
-        help="Epoch per l'overfit mini-subset.",
+        help="Epochs for the mini-subset overfit.",
     )
     parser.add_argument(
         "--epochs_full",
         type=int,
         default=5,
-        help="Epoch per il full-dataset debug training.",
+        help="Epochs for the full-dataset debug training.",
     )
     parser.add_argument(
         "--batch_size",
         type=int,
         default=256,
-        help="Batch size per il training full.",
+        help="Batch size for full training.",
     )
     parser.add_argument(
         "--lr",

@@ -12,5 +12,5 @@ low_level_expert_policy:
     activation: relu
 
   critic:
-    units: [512, 256, 256]
+    units: [1024, 1024, 512]
     activation: relu
