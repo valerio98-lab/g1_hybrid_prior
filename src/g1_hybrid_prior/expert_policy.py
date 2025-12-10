@@ -16,8 +16,6 @@ class LowLevelExpertPolicy(nn.Module):
         self.to(self.device)
 
     def forward(self, obs: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
-        obs = obs.to(self.device)
-        target = target.to(self.device)
         z = self.encoder(obs, target)   
         mu = self.decoder(obs, z)       
         return mu
