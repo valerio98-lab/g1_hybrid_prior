@@ -65,3 +65,32 @@ def rotate_world_to_body(v_world: torch.Tensor, q_wxyz: torch.Tensor) -> torch.T
     ], dim=-1).reshape(3,3)
     return R.t().matmul(v_world)  # (3,)
 
+
+def quat_rotate(q_wxyz: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
+    """
+    Rotate vector(s) v by quaternion(s) q.
+    q: (..., 4) in wxyz
+    v: (..., 3)
+    """
+    q = quat_normalize(q_wxyz)
+    w = q[..., :1]
+    qvec = q[..., 1:]
+    uv = torch.cross(qvec, v, dim=-1)
+    uuv = torch.cross(qvec, uv, dim=-1)
+    return v + 2.0 * (w * uv + uuv)
+
+def quat_rotate_inv(q_wxyz: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
+    return quat_rotate(quat_inv(q_wxyz), v)
+
+def quat_log_vec(q_wxyz: torch.Tensor, eps: float = 1e-8) -> torch.Tensor:
+    """
+    Returns rotation-vector (theta * axis) corresponding to quaternion q.
+    (Your current quat_log returns this already; I’m just making it explicit.)
+    """
+    q = quat_normalize(q_wxyz, eps)
+    w = q[..., :1].clamp(-1.0 + 1e-8, 1.0 - 1e-8)
+    v = q[..., 1:]
+    v_norm = v.norm(dim=-1, keepdim=True).clamp_min(eps)
+    theta = torch.atan2(v_norm, w)
+    axis = v / v_norm
+    return 2.0 * theta * axis

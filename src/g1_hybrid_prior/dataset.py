@@ -88,7 +88,7 @@ class G1HybridPriorDataset(Dataset):
         q_rel = quat_normalize(q_rel)
         q_prev_norm = quat_normalize(prev_root_quat_wxyz)
         root_lin_vel = rotate_world_to_body(root_lin_vel, q_prev_norm)
-        root_ang_vel = quat_log(q_rel) / (2 * dt)
+        root_ang_vel = quat_log(q_rel) / dt
         joint_velocities = wrap_to_pi(next_joints - prev_joints) / (2 * dt)
         return root_lin_vel, root_ang_vel, joint_velocities
 
