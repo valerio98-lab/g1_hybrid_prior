@@ -32,6 +32,11 @@ g1:
     - right_wrist_roll_joint
     - right_wrist_pitch_joint
     - right_wrist_yaw_joint
+  ee_link_names:
+    - left_hand_palm_link
+    - right_hand_palm_link
+    - left_ankle_roll_link
+    - right_ankle_roll_link
 
 h1_2:
   fps: 30

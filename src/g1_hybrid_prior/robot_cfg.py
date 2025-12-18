@@ -18,6 +18,10 @@ class RobotCfg:
     @property
     def dof(self) -> int:
         return len(self.joint_order)
+    
+    @property
+    def num_ee(self) -> int:
+        return len(self.ee_link_names)
 
     @property
     def expected_cols(self) -> int:
@@ -39,4 +43,5 @@ def load_robot_cfg(yaml_path: str, robot: str) -> RobotCfg:
         root_fields=list(entry["root_fields"]),
         quaternion_order=list(entry["quaternion_order"]),
         joint_order=list(entry["joint_order"]),
+        ee_link_names=list(entry.get("ee_link_names", [])),
     )

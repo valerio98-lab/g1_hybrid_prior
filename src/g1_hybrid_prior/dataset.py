@@ -1,4 +1,3 @@
-
 from torch.utils.data import Dataset
 from pathlib import Path
 import torch
@@ -8,13 +7,25 @@ from .helpers import get_project_root, quat_normalize, quat_mul, quat_inv, quat_
 
 
 class G1HybridPriorDataset(Dataset):
-    def __init__(self, file_path:Path, robot:str="g1", lazy_load:bool=False, lazy_load_window:int=1000, vel_mode="backward"): 
+    def __init__(
+        self, 
+        file_path: Path, 
+        robot: str = "g1", 
+        lazy_load: bool = False, 
+        lazy_load_window: int = 1000, 
+        vel_mode="backward",
+        dataset_type: str = "default"  
+    ): 
         super().__init__()
 
         if vel_mode not in ["backward", "central"]:
             raise ValueError(f"Invalid vel_mode '{vel_mode}'. Must be 'backward' or 'central'.")
+        
+        if dataset_type not in ["default", "augmented"]:
+            raise ValueError(f"Invalid dataset_type '{dataset_type}'. Must be 'default' or 'augmented'. The latter if the dataset includes EE positions.")
 
         self.vel_mode = vel_mode
+        self.dataset_type = dataset_type
         self.data = []
         self.dataset = []
 
@@ -27,6 +38,15 @@ class G1HybridPriorDataset(Dataset):
         self.lazy_load = lazy_load
         self.lazy_load_window = lazy_load_window
         self.header_rows = 0
+
+        self.base_cols = self.robot_cfg.expected_cols # 36 per G1
+        self.ee_dim = 0
+        
+        if self.dataset_type == "augmented":
+            self.ee_dim = self.robot_cfg.num_ee * 3
+            self.total_expected_cols = self.base_cols + self.ee_dim
+        else:
+            self.total_expected_cols = self.base_cols
 
         if self.lazy_load:
             self.num_frames = self._count_rows(self.file_path) - self.header_rows
@@ -43,8 +63,13 @@ class G1HybridPriorDataset(Dataset):
                 
     def __frame_building__(self, data):
         dt = 1.0 / self.robot_cfg.fps
+        
+        if data.shape[1] != self.total_expected_cols:
+            raise ValueError(f"File mismatch: expected {self.total_expected_cols} columns, found {data.shape[1]}")
+
         for row in range(data.shape[0]):
             cur = self.__split_row__(data[row], self.robot_cfg)
+            
             if data.shape[0] == 1:
                 prev = cur
                 nxt = cur
@@ -62,54 +87,34 @@ class G1HybridPriorDataset(Dataset):
             if self.vel_mode == "central":
                 if row==0: 
                     root_lin_vel, root_ang_vel, joint_velocities = self.__compute_velocities_forward__(
-                        cur_root_pos=cur[0],
-                        cur_root_quat_wxyz=cur[1],
-                        cur_joints=cur[2],
-                        next_root_pos=nxt[0],
-                        next_root_quat_wxyz=nxt[1],
-                        next_joints=nxt[2],
+                        cur_root_pos=cur[0], cur_root_quat_wxyz=cur[1], cur_joints=cur[2],
+                        next_root_pos=nxt[0], next_root_quat_wxyz=nxt[1], next_joints=nxt[2],
                         dt=dt,
                     )
                 elif row == data.shape[0] - 1:
                     root_lin_vel, root_ang_vel, joint_velocities = self.__compute_velocities_backward__(
-                        prev_root_pos=prev[0],
-                        prev_root_quat_wxyz=prev[1],
-                        prev_joints=prev[2],
-                        cur_root_pos=cur[0],
-                        cur_root_quat_wxyz=cur[1],
-                        cur_joints=cur[2],
+                        prev_root_pos=prev[0], prev_root_quat_wxyz=prev[1], prev_joints=prev[2],
+                        cur_root_pos=cur[0], cur_root_quat_wxyz=cur[1], cur_joints=cur[2],
                         dt=dt,
                     )
                 else:
                     root_lin_vel, root_ang_vel, joint_velocities = self.__compute_velocities_central__(
-                        prev_root_pos=prev[0],
-                        prev_root_quat_wxyz=prev[1],
-                        prev_joints=prev[2],
-                        next_root_pos=nxt[0],
-                        next_root_quat_wxyz=nxt[1],
-                        next_joints=nxt[2],
+                        prev_root_pos=prev[0], prev_root_quat_wxyz=prev[1], prev_joints=prev[2],
+                        cur_root_quat_wxyz=cur[1],
+                        next_root_pos=nxt[0], next_root_quat_wxyz=nxt[1], next_joints=nxt[2],
                         dt=dt,
                     )
             elif self.vel_mode == "backward":
                 if row == 0:
-                    # at first frame, use forward difference
                     root_lin_vel, root_ang_vel, joint_velocities = self.__compute_velocities_forward__(
-                        cur_root_pos=cur[0],
-                        cur_root_quat_wxyz=cur[1],
-                        cur_joints=cur[2],
-                        next_root_pos=nxt[0],
-                        next_root_quat_wxyz=nxt[1],
-                        next_joints=nxt[2],
+                        cur_root_pos=cur[0], cur_root_quat_wxyz=cur[1], cur_joints=cur[2],
+                        next_root_pos=nxt[0], next_root_quat_wxyz=nxt[1], next_joints=nxt[2],
                         dt=dt,
                     )
                 else:
                     root_lin_vel, root_ang_vel, joint_velocities = self.__compute_velocities_backward__(
-                        prev_root_pos=prev[0],
-                        prev_root_quat_wxyz=prev[1],
-                        prev_joints=prev[2],
-                        cur_root_pos=cur[0],
-                        cur_root_quat_wxyz=cur[1],
-                        cur_joints=cur[2],
+                        prev_root_pos=prev[0], prev_root_quat_wxyz=prev[1], prev_joints=prev[2],
+                        cur_root_pos=cur[0], cur_root_quat_wxyz=cur[1], cur_joints=cur[2],
                         dt=dt,
                     )
 
@@ -121,24 +126,37 @@ class G1HybridPriorDataset(Dataset):
                 "root_ang_vel": root_ang_vel,
                 "joint_vel": joint_velocities,
             }
+            
+            # AGGIUNTA EE POS
+            if cur[3] is not None:
+                frame["ee_pos"] = cur[3]
+
             self.dataset.append(frame)
-
-
 
     def __split_row__(self, row: np.ndarray, robot_cfg: RobotCfg):
         """
-        Splits a CSV row into root position, root quaternion (wxyz), and joint angles.
+        Splits a CSV row into root position, root quaternion (wxyz), joint angles,
+        and optionally end-effector positions.
         """
-        root = row[: robot_cfg.root_dim]
-        joints = row[robot_cfg.root_dim : robot_cfg.dof + robot_cfg.root_dim]
+        #Base Data
+        root_end = robot_cfg.root_dim
+        joints_end = root_end + robot_cfg.dof
+        
+        root = row[:root_end]
+        joints = row[root_end:joints_end]
 
         qx, qy, qz, qw = root[3:7]
         root_pos = torch.tensor(root[0:3], dtype=torch.float32)
         root_quat_wxyz = torch.tensor([qw, qx, qy, qz], dtype=torch.float32)  # w,x,y,z
-        joints = torch.tensor(joints, dtype=torch.float32)
+        joints_t = torch.tensor(joints, dtype=torch.float32)
         root_quat_wxyz = quat_normalize(root_quat_wxyz)
+        
+        ee_pos_t = None
+        if self.dataset_type == "augmented":
+            ee_flat = row[joints_end : joints_end + self.ee_dim]
+            ee_pos_t = torch.tensor(ee_flat, dtype=torch.float32).view(robot_cfg.num_ee, 3)
 
-        return root_pos, root_quat_wxyz, joints
+        return root_pos, root_quat_wxyz, joints_t, ee_pos_t
 
     def __compute_velocities_forward__(
         self,
@@ -150,27 +168,16 @@ class G1HybridPriorDataset(Dataset):
         next_joints: torch.Tensor,
         dt: float,
     ):
-        """
-        Forward differences (used only at boundary when vel_mode='central'):
-          v ≈ (x_{t+1} - x_t) / dt
-          ω ≈ log( inv(q_t) * q_{t+1} ) / dt
-          q̇_joints ≈ wrap(x_{t+1} - x_t) / dt
-
-        Velocities expressed in BODY using the CURRENT quaternion (t).
-        """
-        # Linear vel in world then rotate to BODY(cur)
         v_world = (next_root_pos - cur_root_pos) / dt
         q_cur = quat_normalize(cur_root_quat_wxyz)
         q_next_norm = quat_normalize(next_root_quat_wxyz)
         v_body = quat_rotate_inv(q_cur, v_world)
 
-        # Angular vel relative rotation cur->next, expressed in cur frame
         q_rel = quat_mul(quat_inv(q_cur), q_next_norm)
         q_rel = quat_normalize(q_rel)
         w_body = quat_log(q_rel) / dt
 
         joint_vel = wrap_to_pi(next_joints - cur_joints) / dt
-
         return v_body, w_body, joint_vel
 
     def __compute_velocities_central__(
@@ -178,34 +185,26 @@ class G1HybridPriorDataset(Dataset):
         prev_root_pos: torch.Tensor,
         prev_root_quat_wxyz: torch.Tensor,
         prev_joints: torch.Tensor,
+        cur_root_quat_wxyz: torch.Tensor,
         next_root_pos: torch.Tensor,
         next_root_quat_wxyz: torch.Tensor,
         next_joints: torch.Tensor,
         dt: float,
     ):
-        """
-        Central differences:
-          v ≈ (x_{t+1} - x_{t-1}) / (2 dt)
-          ω ≈ log( inv(q_{t-1}) * q_{t+1} ) / (2 dt)
-          q̇ for joints ≈ wrap(x_{t+1} - x_{t-1}) / (2 dt)
-
-        Velocities are expressed in BODY using the PREV quaternion (t-1)
-        """
         denom = 2.0 * dt
-
-        # Linear vel in world_frame then rotate to body_frame(prev)
         v_world = (next_root_pos - prev_root_pos) / denom
+        
+        q_cur_norm = quat_normalize(cur_root_quat_wxyz)
+        v_body = quat_rotate_inv(q_cur_norm, v_world)
+
         q_prev_norm = quat_normalize(prev_root_quat_wxyz)
         q_next_norm = quat_normalize(next_root_quat_wxyz)
-        v_body = quat_rotate_inv(q_prev_norm, v_world)
-
-        # Angular vel: relative rotation prev->next, expressed in prev frame
+        
         q_rel = quat_mul(quat_inv(q_prev_norm), q_next_norm)
         q_rel = quat_normalize(q_rel)
         w_body = quat_log(q_rel) / denom  
 
         joint_vel = wrap_to_pi(next_joints - prev_joints) / denom
-
         return v_body, w_body, joint_vel
 
     def __compute_velocities_backward__(
@@ -218,45 +217,30 @@ class G1HybridPriorDataset(Dataset):
         cur_joints: torch.Tensor,
         dt: float,
     ):
-        """
-        Backward differences:
-          v ≈ (x_t - x_{t-1}) / dt
-          ω ≈ log( inv(q_{t-1}) * q_t ) / dt
-          q̇ for joints ≈ wrap(x_t - x_{t-1}) / dt
-
-        This matches what simulation does. Central differences are smoother but in simulation we only have access to 
-        past and current states. Velocities are expressed in BODY(prev).
-        """
-        # Linear vel in world_frame then rotate to body_frame(prev)
         v_world = (cur_root_pos - prev_root_pos) / dt
-        q_prev_norm = quat_normalize(prev_root_quat_wxyz)
         q_cur = quat_normalize(cur_root_quat_wxyz)
-        v_body = quat_rotate_inv(q_prev_norm, v_world)
+        v_body = quat_rotate_inv(q_cur, v_world)
 
-        # Angular vel: relative rotation prev->cur, expressed in prev frame
-        q_rel = quat_mul(quat_inv(q_prev_norm), q_cur)
+        q_rel = quat_mul(quat_inv(prev_root_quat_wxyz), q_cur)
         q_rel = quat_normalize(q_rel)
         w_body = quat_log(q_rel) / dt
 
-        # Joint vel
         joint_vel = wrap_to_pi(cur_joints - prev_joints) / dt
-
         return v_body, w_body, joint_vel
 
     def _count_rows(self, file_path: Path) -> int:
-        """Count total number of lines in the CSV."""
         with open(file_path, "r") as f:
             return sum(1 for _ in f)
 
     def _load_all(self):
-        """Non-lazy: load whole CSV and build all frames."""
         data = np.loadtxt(self.file_path, delimiter=",", skiprows=self.header_rows)
+        if data.ndim == 1:
+            data = data[None, :]
         self.data = data
         self.dataset = []
-        self.__frame_building__(data)  # same logic you already have
+        self.__frame_building__(data)
 
     def _load_block(self, block_idx: int):
-        """Lazy-load: load a block of rows from the CSV and build frames."""
         core_start = block_idx * self.lazy_load_window
         core_end = min(core_start + self.lazy_load_window, self.num_frames)
         load_start = max(0, core_start - self._ctx_left)
@@ -267,7 +251,7 @@ class G1HybridPriorDataset(Dataset):
 
         data = np.loadtxt(self.file_path, delimiter=",", skiprows=skiprows, max_rows=max_rows)
         if data.ndim == 1:
-            data = data[None, :]  # Convert to 2D array with one row
+            data = data[None, :]
 
         self.current_block_idx = block_idx
         self.current_block_start = core_start
@@ -293,58 +277,9 @@ class G1HybridPriorDataset(Dataset):
         if idx < 0 or idx >= self.num_frames:
             raise IndexError(f"Index {idx} out of range (0, {self.num_frames - 1})")
 
-        # Check if idx falls in the current block
         if not (self.current_block_start <= idx < self.current_block_end):
             block_idx = idx // self.lazy_load_window
             self._load_block(block_idx)
 
         local_idx = int(idx - self.current_block_start)
         return self.dataset[local_idx]
-
-
-
-# if __name__ == "__main__":
-#     from torch.utils.data import DataLoader
-
-#     csv_path = Path("data_raw/LAFAN1_Retargeting_Dataset/g1/dance1_subject1.csv")
-
-#     dataset = G1HybridPriorDataset(
-#         file_path=csv_path,
-#         robot="g1",
-#         lazy_load=False,          # or False to compare behaviours
-#         lazy_load_window=1000,
-#     )
-
-#     loader = DataLoader(
-#         dataset,
-#         batch_size=32,
-#         shuffle=True,            # works: it just triggers different blocks to be loaded
-#         num_workers=0,           # start with 0 to debug more easily
-#         pin_memory=False,        # True later if you move batches to GPU
-#     )
-
-#     i = 0
-#     for batch in loader:
-#         if i == 0:
-#             print(batch.keys())
-#             i += 1
-        
-#         batch = {k: v.to("cuda") for k, v in batch.items()}
-#         # dict_keys(['root_pos', 'root_quat_wxyz', 'joints',
-#         #            'root_lin_vel', 'root_ang_vel', 'joint_vel'])
-#         print(f"{batch['root_pos'].shape=}")        # torch.Size([32, 3])
-#         print(f"{batch['root_quat_wxyz'].shape=}")  # torch.Size([32, 4])
-#         print(f"{batch['joints'].shape=}")          # torch.Size([32, dof])
-#         print(f"{batch['root_lin_vel'].shape=}")   # torch.Size([32, 3])
-#         print(f"{batch['root_ang_vel'].shape=}")   # torch.Size([32,
-#         print(f"{batch['joint_vel'].shape=}")      # torch.Size([32, dof])
-#         i += 1
-#         if i == 5:
-#             break
-
-
-
-
-
-
-    
