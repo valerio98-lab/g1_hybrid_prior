@@ -2,6 +2,7 @@ from torch.utils.data import Dataset
 from pathlib import Path
 import torch
 import numpy as np
+from tqdm import tqdm
 from .robot_cfg import RobotCfg, load_robot_cfg
 from .helpers import get_project_root, quat_normalize, quat_mul, quat_inv, quat_log, wrap_to_pi, quat_rotate_inv
 
@@ -9,7 +10,7 @@ from .helpers import get_project_root, quat_normalize, quat_mul, quat_inv, quat_
 class G1HybridPriorDataset(Dataset):
     def __init__(
         self, 
-        file_path: Path, 
+        file_path: Path | str,
         robot: str = "g1", 
         lazy_load: bool = False, 
         lazy_load_window: int = 1000, 
@@ -18,28 +19,30 @@ class G1HybridPriorDataset(Dataset):
     ): 
         super().__init__()
 
+        self.file_path = Path(file_path)
+        if not self.file_path.exists():
+            raise FileNotFoundError(f"Dataset path not found: {self.file_path}")
+        
         if vel_mode not in ["backward", "central"]:
             raise ValueError(f"Invalid vel_mode '{vel_mode}'. Must be 'backward' or 'central'.")
         
         if dataset_type not in ["default", "augmented"]:
-            raise ValueError(f"Invalid dataset_type '{dataset_type}'. Must be 'default' or 'augmented'. The latter if the dataset includes EE positions.")
+            raise ValueError(f"Invalid dataset_type '{dataset_type}'. Must be 'default' or 'augmented'.")
 
-        self.vel_mode = vel_mode
-        self.dataset_type = dataset_type
         self.data = []
         self.dataset = []
-
+        self.vel_mode = vel_mode
+        self.dataset_type = dataset_type
         self._ctx_left = 1 if self.vel_mode in ["backward", "central"] else 0
         self._ctx_right = 1 if self.vel_mode in ["central", "backward"] else 0
 
-        self.file_path = file_path
         self.yaml = str(get_project_root()/"config"/"robots.yaml")
         self.robot_cfg = load_robot_cfg(self.yaml, robot)
         self.lazy_load = lazy_load
         self.lazy_load_window = lazy_load_window
         self.header_rows = 0
 
-        self.base_cols = self.robot_cfg.expected_cols # 36 per G1
+        self.base_cols = self.robot_cfg.expected_cols 
         self.ee_dim = 0
         
         if self.dataset_type == "augmented":
@@ -48,24 +51,65 @@ class G1HybridPriorDataset(Dataset):
         else:
             self.total_expected_cols = self.base_cols
 
-        if self.lazy_load:
-            self.num_frames = self._count_rows(self.file_path) - self.header_rows
-            self.current_block_idx = None
-            self.current_block_start = 0
-            self.current_block_end = 0
-            self._loaded_start = 0
-            self._loaded_end = 0
-            self._load_block(0)
-        else: 
-            self._load_all()
+        if self.file_path.is_dir():
+            if lazy_load:
+                print("[Dataset] WARNING: Lazy load not supported for directories. Switching to full load.")
+                lazy_load = False
+            
+            files = sorted(list(self.file_path.glob("*.csv")))
+            print(f"[Dataset] Loading dataset from directory: {self.file_path}, {len(files)} files found.")
+
+            total_frames = 0
+            for f in tqdm(files, desc="Loading dataset files"):
+                file_frames = self._load_file(f) 
+                self.dataset.extend(file_frames)
+                total_frames += len(file_frames)
+            print(f"[Dataset] Total frames loaded: {total_frames}")
             self.num_frames = len(self.dataset)
 
-                
+        elif self.file_path.is_file():
+            if lazy_load:
+                self.lazy_load = True
+                self.lazy_load_window = lazy_load_window
+                self.header_rows = 0 
+                self.num_frames = self._count_rows(self.file_path) - self.header_rows
+                self.current_block_idx = None
+                self._load_block(0)
+            else:
+                self.lazy_load = False
+                # ORA FUNZIONA: _load_file esiste
+                self.dataset = self._load_file(self.file_path)
+                self.num_frames = len(self.dataset)
+        
+        # Gestione caso file singolo lazy (già gestito sopra nell'if is_file, ma teniamo per sicurezza logica)
+        # Nota: ho rimosso la duplicazione di logica che avevi in fondo all'init precedente
+
+    def _load_file(self, path: Path):
+        """Helper per caricare un singolo file CSV e restituire la lista di frame."""
+        # Usa header=None perché i tuoi file augmented non hanno header
+        try:
+            data = np.loadtxt(path, delimiter=",", skiprows=self.header_rows)
+        except Exception as e:
+            print(f"Error loading {path}: {e}")
+            return []
+            
+        if data.ndim == 1:
+            data = data[None, :]
+            
+        # Chiama frame_building che ora RESTITUISCE la lista
+        return self.__frame_building__(data)
+
     def __frame_building__(self, data):
+        """
+        ORA RESTITUISCE UNA LISTA DI FRAME invece di appendere a self.dataset.
+        Questo rende la funzione 'pura' e usabile nei loop.
+        """
         dt = 1.0 / self.robot_cfg.fps
         
         if data.shape[1] != self.total_expected_cols:
             raise ValueError(f"File mismatch: expected {self.total_expected_cols} columns, found {data.shape[1]}")
+
+        frames_list = [] # Buffer locale
 
         for row in range(data.shape[0]):
             cur = self.__split_row__(data[row], self.robot_cfg)
@@ -127,18 +171,14 @@ class G1HybridPriorDataset(Dataset):
                 "joint_vel": joint_velocities,
             }
             
-            # AGGIUNTA EE POS
             if cur[3] is not None:
                 frame["ee_pos"] = cur[3]
 
-            self.dataset.append(frame)
+            frames_list.append(frame)
+        
+        return frames_list # Ritorna la lista!
 
     def __split_row__(self, row: np.ndarray, robot_cfg: RobotCfg):
-        """
-        Splits a CSV row into root position, root quaternion (wxyz), joint angles,
-        and optionally end-effector positions.
-        """
-        #Base Data
         root_end = robot_cfg.root_dim
         joints_end = root_end + robot_cfg.dof
         
@@ -147,7 +187,7 @@ class G1HybridPriorDataset(Dataset):
 
         qx, qy, qz, qw = root[3:7]
         root_pos = torch.tensor(root[0:3], dtype=torch.float32)
-        root_quat_wxyz = torch.tensor([qw, qx, qy, qz], dtype=torch.float32)  # w,x,y,z
+        root_quat_wxyz = torch.tensor([qw, qx, qy, qz], dtype=torch.float32)
         joints_t = torch.tensor(joints, dtype=torch.float32)
         root_quat_wxyz = quat_normalize(root_quat_wxyz)
         
@@ -158,16 +198,7 @@ class G1HybridPriorDataset(Dataset):
 
         return root_pos, root_quat_wxyz, joints_t, ee_pos_t
 
-    def __compute_velocities_forward__(
-        self,
-        cur_root_pos: torch.Tensor,
-        cur_root_quat_wxyz: torch.Tensor,
-        cur_joints: torch.Tensor,
-        next_root_pos: torch.Tensor,
-        next_root_quat_wxyz: torch.Tensor,
-        next_joints: torch.Tensor,
-        dt: float,
-    ):
+    def __compute_velocities_forward__(self, cur_root_pos, cur_root_quat_wxyz, cur_joints, next_root_pos, next_root_quat_wxyz, next_joints, dt):
         v_world = (next_root_pos - cur_root_pos) / dt
         q_cur = quat_normalize(cur_root_quat_wxyz)
         q_next_norm = quat_normalize(next_root_quat_wxyz)
@@ -180,17 +211,7 @@ class G1HybridPriorDataset(Dataset):
         joint_vel = wrap_to_pi(next_joints - cur_joints) / dt
         return v_body, w_body, joint_vel
 
-    def __compute_velocities_central__(
-        self,
-        prev_root_pos: torch.Tensor,
-        prev_root_quat_wxyz: torch.Tensor,
-        prev_joints: torch.Tensor,
-        cur_root_quat_wxyz: torch.Tensor,
-        next_root_pos: torch.Tensor,
-        next_root_quat_wxyz: torch.Tensor,
-        next_joints: torch.Tensor,
-        dt: float,
-    ):
+    def __compute_velocities_central__(self, prev_root_pos, prev_root_quat_wxyz, prev_joints, cur_root_quat_wxyz, next_root_pos, next_root_quat_wxyz, next_joints, dt):
         denom = 2.0 * dt
         v_world = (next_root_pos - prev_root_pos) / denom
         
@@ -207,16 +228,7 @@ class G1HybridPriorDataset(Dataset):
         joint_vel = wrap_to_pi(next_joints - prev_joints) / denom
         return v_body, w_body, joint_vel
 
-    def __compute_velocities_backward__(
-        self,
-        prev_root_pos: torch.Tensor,
-        prev_root_quat_wxyz: torch.Tensor,
-        prev_joints: torch.Tensor,
-        cur_root_pos: torch.Tensor,
-        cur_root_quat_wxyz: torch.Tensor,
-        cur_joints: torch.Tensor,
-        dt: float,
-    ):
+    def __compute_velocities_backward__(self, prev_root_pos, prev_root_quat_wxyz, prev_joints, cur_root_pos, cur_root_quat_wxyz, cur_joints, dt):
         v_world = (cur_root_pos - prev_root_pos) / dt
         q_cur = quat_normalize(cur_root_quat_wxyz)
         v_body = quat_rotate_inv(q_cur, v_world)
@@ -237,8 +249,8 @@ class G1HybridPriorDataset(Dataset):
         if data.ndim == 1:
             data = data[None, :]
         self.data = data
-        self.dataset = []
-        self.__frame_building__(data)
+        # Ora __frame_building__ ritorna la lista, quindi assegniamo
+        self.dataset = self.__frame_building__(data)
 
     def _load_block(self, block_idx: int):
         core_start = block_idx * self.lazy_load_window
@@ -259,14 +271,13 @@ class G1HybridPriorDataset(Dataset):
         self._loaded_start = load_start
         self._loaded_end = load_end
         self.data = data
-        self.dataset = []
-        self.__frame_building__(data)
+        # Assegnazione corretta
+        full_block = self.__frame_building__(data)
 
         core_offset = core_start - load_start
         core_len = core_end - core_start
-        self.dataset = self.dataset[core_offset : core_offset + core_len]
+        self.dataset = full_block[core_offset : core_offset + core_len]
         
-
     def __len__(self):
         return self.num_frames
 

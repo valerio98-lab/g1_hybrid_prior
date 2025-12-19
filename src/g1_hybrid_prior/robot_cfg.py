@@ -10,6 +10,7 @@ class RobotCfg:
     root_fields: List[str]  # ["X","Y","Z","QX","QY","QZ","QW"]
     quaternion_order: List[str]
     joint_order: List[str]  # ordered list of joint names in the CSV
+    ee_link_names: List[str]  # names of end-effector links
 
     @property
     def root_dim(self) -> int:
