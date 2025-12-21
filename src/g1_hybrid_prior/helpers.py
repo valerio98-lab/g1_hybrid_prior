@@ -38,19 +38,32 @@ def quat_inv(q: torch.Tensor) -> torch.Tensor:
     Computes the inverse of a quaternion tensor.
     """
     w, x, y, z = q.unbind(-1)
-    return torch.stack([w, -x, -y, -z], dim=-1)
+    conj = torch.stack([w, -x, -y, -z], dim=-1)
+    norm_2 = (q * q).sum(dim=-1, keepdim=True).clamp_min(1e-8)
+    return conj / norm_2
+
+def quat_canonical(q: torch.Tensor) -> torch.Tensor:
+    """
+    Converts a quaternion tensor to its canonical form (non-negative scalar part).
+    """
+    q = quat_normalize(q)
+    mask = (q[..., :1] < 0)
+    return torch.where(mask, -q, q)
 
 def quat_log(q: torch.Tensor, eps=1e-8) -> torch.Tensor:
     """
     Computes the logarithm of a quaternion tensor.
     """
-    q = quat_normalize(q, eps)
-    w = q[..., :1]
+    q = quat_canonical(q)
+    w = q[..., :1].clamp(-1.0 + 1e-8, 1.0 - 1e-8)
     v = q[..., 1:]
     v_norm = v.norm(dim=-1, keepdim=True).clamp_min(eps)
-    theta = torch.atan2(v_norm, w.clamp(-1+1e-8, 1-1e-8))
+    theta = torch.atan2(v_norm, w)
     axis = v / v_norm
-    return 2.0 * theta * axis  
+    rotvec_big = 2.0 * theta * axis
+    rotvec_small = 2.0 * v
+    small = (v_norm < 1e-4)
+    return torch.where(small, rotvec_small, rotvec_big)
 
 
 def rotate_world_to_body(v_world: torch.Tensor, q_wxyz: torch.Tensor) -> torch.Tensor:

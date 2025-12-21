@@ -16,15 +16,20 @@ class LowLevelExpertPolicy(nn.Module):
         with open(cfg_path, "r") as f:
             cfg = yaml.safe_load(f)
 
+        ll_cfg = cfg["low_level_expert_policy"]
+        self.cfg_ll = ll_cfg
+
         latent_dim = cfg["low_level_expert_policy"]["encoder"]["units"][-1]
 
         self.encoder = Encoder(obs_dim=obs_dim, target_dim=goal_dim, cfg=cfg)
         self.decoder = Decoder(
             obs_dim=obs_dim, latent_dim=latent_dim, action_dim=action_dim, cfg=cfg
         )
+        init_log_std = ll_cfg.get("init_log_std", -2.9)
+        sigma_fixed = ll_cfg.get("sigma_fixed", True)
         self.critic = ValueHead(obs_dim=obs_dim, goal_dim=goal_dim, cfg=cfg)
         self.log_std = nn.Parameter(
-            torch.zeros(action_dim), requires_grad=True
+            torch.full((action_dim,), init_log_std, dtype=torch.float32), requires_grad=not sigma_fixed
         )  # learnable log standard deviation. PPO can use this directly during training.
         # Obv for a fixed sigma requires_grad=False
 
@@ -36,7 +41,11 @@ class LowLevelExpertPolicy(nn.Module):
         z = self.encoder(obs, target)
         mu = self.decoder(obs, z)
         value = self.critic(obs, target)
+
         log_std = self.log_std.expand_as(mu)
+        log_std_min = self.cfg_ll.get("log_std_min", -5.0)
+        log_std_max = self.cfg_ll.get("log_std_max", 1.0)
+        log_std = torch.clamp(log_std, log_std_min, log_std_max)
         return mu, log_std, value
 
 
