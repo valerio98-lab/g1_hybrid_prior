@@ -19,7 +19,7 @@ class RobotCfg:
     @property
     def dof(self) -> int:
         return len(self.joint_order)
-    
+
     @property
     def num_ee(self) -> int:
         return len(self.ee_link_names)

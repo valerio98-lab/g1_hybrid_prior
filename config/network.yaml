@@ -1,11 +1,9 @@
 
 low_level_expert_policy: 
   type: MLPPolicy
-  batch_size: 256
-  learning_rate: 0.0003
   ##Sigma settings
-  init_log_std: -1.2 #-2.9
-  sigma_fixed: False
+  init_log_std: -2.9
+  sigma_fixed: True
   log_std_min: -5.0
   log_std_max: 1.0
 

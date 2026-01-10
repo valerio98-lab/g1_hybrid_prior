@@ -29,7 +29,8 @@ class LowLevelExpertPolicy(nn.Module):
         sigma_fixed = ll_cfg.get("sigma_fixed", True)
         self.critic = ValueHead(obs_dim=obs_dim, goal_dim=goal_dim, cfg=cfg)
         self.log_std = nn.Parameter(
-            torch.full((action_dim,), init_log_std, dtype=torch.float32), requires_grad=not sigma_fixed
+            torch.full((action_dim,), init_log_std, dtype=torch.float32),
+            requires_grad=not sigma_fixed,
         )  # learnable log standard deviation. PPO can use this directly during training.
         # Obv for a fixed sigma requires_grad=False
 

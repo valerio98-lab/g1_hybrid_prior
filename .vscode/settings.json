@@ -1,5 +1,13 @@
 {
-    "python-envs.defaultEnvManager": "ms-python.python:pyenv",
-    "python-envs.defaultPackageManager": "ms-python.python:pip",
-    "python-envs.pythonProjects": []
+  "python-envs.defaultEnvManager": "ms-python.python:pyenv",
+  "python-envs.defaultPackageManager": "ms-python.python:pip",
+  "python-envs.pythonProjects": [],
+
+  "editor.formatOnSave": true,
+  "[python]": {
+    "editor.defaultFormatter": "ms-python.black-formatter",
+    "editor.formatOnSave": true
+  },
+
+  "black-formatter.args": ["--line-length", "88"]
 }
