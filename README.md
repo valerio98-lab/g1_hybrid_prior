@@ -5,21 +5,14 @@
 It's strongly suggested to set up a virtual env; pyenv or uv is preferable but also a conda virtual env is fine if you're more acquainted with the latter. 
 
 
-### 1. Clone the repository
+### 1. Clone the repository including the submodules
 
 ```bash
-git clone https://github.com/valerio98-lab/g1_hybrid_prior.git
+git clone --recurse-submodules https://github.com/valerio98-lab/g1_hybrid_prior.git
 cd g1_hybrid_prior
 ```
 
-### 2. Get the dataset as a submodule
-
-```bash
-git submodule add https://huggingface.co/datasets/lvhaidong/LAFAN1_Retargeting_Dataset data_raw/LAFAN1_Retargeting_Dataset
-git submodule update --init --recursive
-```
-
-### 3. Install the repo as a package
+### 2. Install the repo as a package
 ```bash
 pip install -e .
 ```
