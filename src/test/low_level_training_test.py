@@ -20,7 +20,7 @@ import yaml
 
 from g1_hybrid_prior.dataset import G1HybridPriorDataset
 from g1_hybrid_prior.expert_policy import LowLevelExpertPolicy
-from g1_hybrid_prior.helpers import get_project_root            
+from g1_hybrid_prior.helpers import get_project_root
 
 
 def build_batch_tensors(batch: Dict[str, torch.Tensor], device: torch.device):
@@ -32,12 +32,12 @@ def build_batch_tensors(batch: Dict[str, torch.Tensor], device: torch.device):
     - goal = joints
     - actions_gt = joints (joint targets come "expert actions")
     """
-    root_pos = batch["root_pos"]        # (B, 3)
+    root_pos = batch["root_pos"]  # (B, 3)
     root_quat = batch["root_quat_wxyz"]  # (B, 4)
-    joints = batch["joints"]          # (B, dof)
-    root_lin_vel = batch["root_lin_vel"]    # (B, 3)
-    root_ang_vel= batch["root_ang_vel"]    # (B, 3)
-    joint_vel = batch["joint_vel"]       # (B, dof)
+    joints = batch["joints"]  # (B, dof)
+    root_lin_vel = batch["root_lin_vel"]  # (B, 3)
+    root_ang_vel = batch["root_ang_vel"]  # (B, 3)
+    joint_vel = batch["joint_vel"]  # (B, dof)
 
     # obs completo: stato + velocità
     obs = torch.cat(
@@ -50,9 +50,9 @@ def build_batch_tensors(batch: Dict[str, torch.Tensor], device: torch.device):
             joint_vel,
         ],
         dim=-1,
-    )  
-    goal = joints.clone()        
-    actions_gt = joints.clone() 
+    )
+    goal = joints.clone()
+    actions_gt = joints.clone()
 
     obs = obs.to(device)
     goal = goal.to(device)
@@ -164,7 +164,7 @@ def overfit_mini_subset(
         mu_pred = policy(obs, goal)
         loss = mse_loss(mu_pred, actions_gt).item()
         diff = mu_pred - actions_gt
-        joint_mse = (diff ** 2).mean(dim=0)  # per joint
+        joint_mse = (diff**2).mean(dim=0)  # per joint
 
         print(f"\n Final mini-subset loss: {loss:.6f}")
         print("  MSE per joint (first 5):", joint_mse[:5].cpu().numpy())
@@ -236,7 +236,7 @@ def train_full_debug(
             if global_step % log_interval == 0:
                 with torch.no_grad():
                     diff = mu_pred - actions_gt
-                    batch_mse = (diff ** 2).mean().item()
+                    batch_mse = (diff**2).mean().item()
                     print(
                         f"  [Epoch {epoch:02d} | step {global_step:05d}] "
                         f"loss = {loss.item():.6f}, batch MSE = {batch_mse:.6f}"
@@ -248,13 +248,15 @@ def train_full_debug(
     # Diagnostica su un batch finale
     policy.eval()
     with torch.no_grad():
-        loader_eval = DataLoader(dataset, batch_size=batch_size, shuffle=True, num_workers=0)
+        loader_eval = DataLoader(
+            dataset, batch_size=batch_size, shuffle=True, num_workers=0
+        )
         batch = next(iter(loader_eval))
         obs, goal, actions_gt = build_batch_tensors(batch, device=device)
         mu_pred = policy(obs, goal)
         loss = mse_loss(mu_pred, actions_gt).item()
         diff = mu_pred - actions_gt
-        joint_mse = (diff ** 2).mean(dim=0)
+        joint_mse = (diff**2).mean(dim=0)
 
         print(f"\n  Final eval loss (full dataset): {loss:.6f}")
         print("MSE per joint (primi 5):", joint_mse[:5].cpu().numpy())
@@ -278,13 +280,21 @@ def train_full_debug(
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Mini cinematic debug training for LowLevelExpertPolicy.")
+    parser = argparse.ArgumentParser(
+        description="Mini cinematic debug training for LowLevelExpertPolicy."
+    )
     root = get_project_root()
 
     parser.add_argument(
         "--csv_path",
         type=str,
-        default=str(root / "data_raw" / "LAFAN1_Retargeting_Dataset" / "g1" / "dance1_subject1.csv"),
+        default=str(
+            root
+            / "data_raw"
+            / "LAFAN1_Retargeting_Dataset"
+            / "g1"
+            / "dance1_subject1.csv"
+        ),
         help="Path to the retargeted dataset CSV.",
     )
     parser.add_argument(

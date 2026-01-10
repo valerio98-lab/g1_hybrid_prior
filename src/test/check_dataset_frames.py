@@ -10,10 +10,13 @@ from g1_hybrid_prior.helpers import (
     quat_mul,
 )
 
+
 @torch.no_grad()
 def main():
     ds = G1HybridPriorDataset(
-        file_path=Path("/home/valerio/g1_hybrid_prior/data_raw/LAFAN1_Retargeting_Dataset/g1/dance1_subject2.csv"),
+        file_path=Path(
+            "/home/valerio/g1_hybrid_prior/data_raw/LAFAN1_Retargeting_Dataset/g1/dance1_subject2.csv"
+        ),
         robot="g1",
         lazy_load=False,
     )
@@ -39,8 +42,12 @@ def main():
     print(f"t={t}, dt={dt}")
     print(f"||v_world_fd|| = {torch.norm(v_world_fd).item():.6f}")
     print(f"||v_stored||   = {torch.norm(v_stored).item():.6f}")
-    print(f"error if stored is BODY  (R(q)*v_stored vs v_world_fd): {err_if_stored_body:.6e}")
-    print(f"error if stored is WORLD (v_stored vs v_world_fd):      {err_if_stored_world:.6e}")
+    print(
+        f"error if stored is BODY  (R(q)*v_stored vs v_world_fd): {err_if_stored_body:.6e}"
+    )
+    print(
+        f"error if stored is WORLD (v_stored vs v_world_fd):      {err_if_stored_world:.6e}"
+    )
 
     # -------- Angular velocity consistency check --------
     q_prev = quat_normalize(prev["root_quat_wxyz"])
@@ -57,6 +64,7 @@ def main():
 
     print("\n=== DATASET ANGULAR VEL CONSISTENCY ===")
     print(f"error (w_stored vs quat_log(inv(q_prev)*q_next)/(2dt)): {err_w:.6e}")
+
 
 if __name__ == "__main__":
     main()
