@@ -8,7 +8,15 @@ from .robot_cfg import load_robot_cfg
 
 
 class G1AMPDataset(Dataset):
-    def __init__(self, file_path, device="cuda", robot="g1", Z_UP=True, strict=True):
+    def __init__(
+        self,
+        file_path,
+        num_amp_obs_steps: int = 2,
+        device="cuda",
+        robot="g1",
+        Z_UP=True,
+        strict=True,
+    ):
         self.device = device
         self.file_path = file_path
 
@@ -31,6 +39,11 @@ class G1AMPDataset(Dataset):
         name_to_idx = {n: i for i, n in enumerate(npz_dof_names)}
         missing = [n for n in canonical if n not in name_to_idx]
         extra = [n for n in npz_dof_names if n not in set(canonical)]
+
+        self.num_amp_obs_steps = num_amp_obs_steps
+        assert (
+            self.num_amp_obs_steps >= 2
+        ), "[G1AMPDataset] AMP observation window must be at least 2 steps."
 
         if strict:
             if missing:
@@ -114,10 +127,21 @@ class G1AMPDataset(Dataset):
         return self.amp_batch[idx]
 
     def sample(self, batch_size):
-        idx = torch.randint(
-            0, self.amp_batch.shape[0], (batch_size,), device=self.device
+        T = self.amp_batch.shape[0]
+        K = self.num_amp_obs_steps
+
+        # scegli t in [K-1, T-1] così hai storia completa
+        t = torch.randint(K - 1, T, (batch_size,), device=self.device)
+
+        # costruisci indici [t, t-1, ..., t-K+1]
+        offsets = torch.arange(0, K, device=self.device)  # [0..K-1]
+        idx = t.unsqueeze(1) - offsets.unsqueeze(0)  # (B, K)
+
+        # prendi frames e flattna: (B, K, 69) -> (B, K*69)
+        batch = self.amp_batch.index_select(0, idx.reshape(-1)).reshape(
+            batch_size, K, -1
         )
-        return self.amp_batch[idx]
+        return batch.reshape(batch_size, -1)
 
 
 # if __name__ == "__main__":

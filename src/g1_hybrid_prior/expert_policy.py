@@ -131,6 +131,73 @@ class ValueHead(nn.Module):
         return value
 
 
+class LowLevelActor(nn.Module):
+    def __init__(self, obs_dim: int, goal_dim: int, action_dim: int, device=None):
+        super().__init__()
+        if device is None:
+            device = "cuda" if torch.cuda.is_available() else "cpu"
+        self.device = device
+
+        cfg_path = get_project_root() / "config" / "network.yaml"
+        with open(cfg_path, "r") as f:
+            cfg = yaml.safe_load(f)
+
+        ll_cfg = cfg["low_level_expert_policy"]
+        self.cfg_ll = ll_cfg
+
+        latent_dim = ll_cfg["encoder"]["units"][-1]
+
+        self.encoder = Encoder(obs_dim=obs_dim, target_dim=goal_dim, cfg=cfg)
+        self.decoder = Decoder(
+            obs_dim=obs_dim, latent_dim=latent_dim, action_dim=action_dim, cfg=cfg
+        )
+
+        init_log_std = ll_cfg.get("init_log_std", -2.9)
+        sigma_fixed = ll_cfg.get("sigma_fixed", True)
+
+        self.log_std = nn.Parameter(
+            torch.full((action_dim,), init_log_std, dtype=torch.float32),
+            requires_grad=not sigma_fixed,
+        )
+
+        self.to(self.device)
+
+    def forward(self, obs: torch.Tensor, goal: torch.Tensor):
+        obs = obs.to(self.device)
+        goal = goal.to(self.device)
+
+        z = self.encoder(obs, goal)
+        mu = self.decoder(obs, z)
+
+        log_std = self.log_std.expand_as(mu)
+        log_std_min = self.cfg_ll.get("log_std_min", -5.0)
+        log_std_max = self.cfg_ll.get("log_std_max", 1.0)
+        log_std = torch.clamp(log_std, log_std_min, log_std_max)
+
+        return mu, log_std
+
+
+class LowLevelCritic(nn.Module):
+    def __init__(self, obs_dim: int, goal_dim: int, device=None):
+        super().__init__()
+        if device is None:
+            device = "cuda" if torch.cuda.is_available() else "cpu"
+        self.device = device
+
+        cfg_path = get_project_root() / "config" / "network.yaml"
+        with open(cfg_path, "r") as f:
+            cfg = yaml.safe_load(f)
+
+        self.critic = ValueHead(obs_dim=obs_dim, goal_dim=goal_dim, cfg=cfg)
+        self.to(self.device)
+
+    def forward(self, obs: torch.Tensor, goal: torch.Tensor):
+        obs = obs.to(self.device)
+        goal = goal.to(self.device)
+        value = self.critic(obs, goal)
+        return value
+
+
 # if __name__ == "__main__":
 #     import yaml
 #     from .helpers import get_project_root
