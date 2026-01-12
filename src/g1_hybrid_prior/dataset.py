@@ -31,6 +31,11 @@ class G1HybridPriorDataset(Dataset):
         if not self.file_path.exists():
             raise FileNotFoundError(f"Dataset path not found: {self.file_path}")
 
+        if self.file_path.suffix not in [".csv"] and not self.file_path.is_dir():
+            raise ValueError(
+                f"Invalid file type: {self.file_path.suffix}. Must be a CSV file or a directory."
+            )
+
         if vel_mode not in ["backward", "central"]:
             raise ValueError(
                 f"Invalid vel_mode '{vel_mode}'. Must be 'backward' or 'central'."

@@ -2,6 +2,7 @@ import torch
 import numpy as np
 from torch.utils.data import Dataset
 from typing import List
+from pathlib import Path  # Aggiunto per gestire i path
 
 from .helpers import quat_rotate_inv, quat_normalize, get_project_root
 from .robot_cfg import load_robot_cfg
@@ -18,75 +19,129 @@ class G1AMPDataset(Dataset):
         strict=True,
     ):
         self.device = device
-        self.file_path = file_path
+        self.file_path = Path(file_path)  # Convertiamo in Path object
 
-        print(f"[G1AMPDataset] Loading {file_path}...")
-        data = np.load(file_path, allow_pickle=True)
+        if not self.file_path.exists():
+            raise FileNotFoundError(
+                f"[G1AMPDataset] File or Directory not found: {self.file_path}"
+            )
 
-        # ---- Load names from NPZ ----
-        npz_dof_names: List[str] = [str(x) for x in data["dof_names"].tolist()]
-        self.npz_dof_names = npz_dof_names
+        # 1. RACCOLTA LISTA FILE
+        file_list = []
+        if self.file_path.is_dir():
+            # Glob di tutti i .npz ordinati
+            file_list = sorted(list(self.file_path.glob("*.npz")))
+            if len(file_list) == 0:
+                raise FileNotFoundError(
+                    f"[G1AMPDataset] No .npz files found in directory: {self.file_path}"
+                )
+            print(f"[G1AMPDataset] Found directory with {len(file_list)} clips.")
+        else:
+            if self.file_path.suffix != ".npz":
+                raise ValueError(
+                    f"[G1AMPDataset] Invalid file type: {self.file_path}. Must be .npz"
+                )
+            file_list = [self.file_path]
 
-        npz_body_names: List[str] = [str(x) for x in data["body_names"].tolist()]
-        self.npz_body_names = npz_body_names
+        # 2. CARICAMENTO E CONCATENAZIONE
+        # Liste temporanee per accumulare i dati di tutti i file
+        all_body_pos = []
+        all_body_rot = []
+        all_body_vel = []
+        all_body_ang_vel = []
+        all_dof_pos = []
+        all_dof_vel = []
 
-        # ---- Canonical order from robots.yaml ----
-        robots_yaml = str(get_project_root() / "config" / "robots.yaml")
-        self.robot_cfg = load_robot_cfg(robots_yaml, robot)
-        canonical = list(self.robot_cfg.joint_order)
+        # Variabili metadata (prese dal primo file)
+        self.npz_dof_names = None
+        self.npz_body_names = None
 
-        # ---- Build permutation: NPZ -> canonical ----
-        name_to_idx = {n: i for i, n in enumerate(npz_dof_names)}
-        missing = [n for n in canonical if n not in name_to_idx]
-        extra = [n for n in npz_dof_names if n not in set(canonical)]
+        print(f"[G1AMPDataset] Loading {len(file_list)} files...")
 
+        for i, f in enumerate(file_list):
+            try:
+                data = np.load(f, allow_pickle=True)
+
+                # Al primo file, settiamo i metadati e facciamo i check
+                if i == 0:
+                    self.npz_dof_names = [str(x) for x in data["dof_names"].tolist()]
+                    self.npz_body_names = [str(x) for x in data["body_names"].tolist()]
+
+                    # ---- Setup Permutazione (Fatto una sola volta basandosi sul primo file) ----
+                    robots_yaml = str(get_project_root() / "config" / "robots.yaml")
+                    self.robot_cfg = load_robot_cfg(robots_yaml, robot)
+                    canonical = list(self.robot_cfg.joint_order)
+
+                    name_to_idx = {n: i for i, n in enumerate(self.npz_dof_names)}
+                    missing = [n for n in canonical if n not in name_to_idx]
+
+                    if strict and missing:
+                        raise ValueError(
+                            f"[G1AMPDataset] Missing DOF(s) in NPZ: {missing[:10]} ..."
+                        )
+                    elif missing:
+                        print(
+                            f"[G1AMPDataset] WARNING: Missing DOF(s) in NPZ: {missing[:10]} ..."
+                        )
+
+                    perm = [name_to_idx[n] for n in canonical if n in name_to_idx]
+                    self._perm_npz_to_canonical = torch.tensor(
+                        perm, dtype=torch.long, device=device
+                    )
+                else:
+                    # Check consistenza (opzionale ma consigliato): verifichiamo che gli altri file abbiano gli stessi giunti
+                    curr_dof_names = [str(x) for x in data["dof_names"].tolist()]
+                    if curr_dof_names != self.npz_dof_names:
+                        print(
+                            f"[G1AMPDataset] ⚠️ WARNING: Mismatch in DOF names in file {f.name}. Skipping."
+                        )
+                        continue
+
+                # Appendiamo i dati
+                all_body_pos.append(data["body_positions"])
+                all_body_rot.append(data["body_rotations"])
+                all_body_vel.append(data["body_linear_velocities"])
+                all_body_ang_vel.append(data["body_angular_velocities"])
+                all_dof_pos.append(data["dof_positions"])
+                all_dof_vel.append(data["dof_velocities"])
+
+            except Exception as e:
+                print(f"[G1AMPDataset] Error loading {f}: {e}")
+
+        # Concateniamo tutto lungo l'asse temporale (axis=0)
+        # Usiamo np.concatenate prima di convertire in Tensor per efficienza
+        raw_body_pos = np.concatenate(all_body_pos, axis=0)
+        raw_body_rot = np.concatenate(all_body_rot, axis=0)
+        raw_body_vel = np.concatenate(all_body_vel, axis=0)
+        raw_body_ang = np.concatenate(all_body_ang_vel, axis=0)
+        raw_dof_pos = np.concatenate(all_dof_pos, axis=0)
+        raw_dof_vel = np.concatenate(all_dof_vel, axis=0)
+
+        # 3. CREAZIONE TENSORI (Come prima, ma sui dati concatenati)
         self.num_amp_obs_steps = num_amp_obs_steps
         assert (
             self.num_amp_obs_steps >= 2
         ), "[G1AMPDataset] AMP observation window must be at least 2 steps."
 
-        if strict:
-            if missing:
-                raise ValueError(
-                    f"[G1AMPDataset] Missing DOF(s) in NPZ: {missing[:10]} ..."
-                )
-        else:
-            if missing:
-                print(
-                    f"[G1AMPDataset] WARNING: Missing DOF(s) in NPZ: {missing[:10]} ..."
-                )
-
-        perm = [name_to_idx[n] for n in canonical if n in name_to_idx]
-        self._perm_npz_to_canonical = torch.tensor(
-            perm, dtype=torch.long, device=device
-        )
-
-        # ---- Load tensors ----
         # Root: index 0 body
         self.root_pos_w = torch.tensor(
-            data["body_positions"][:, 0, :], dtype=torch.float32, device=device
+            raw_body_pos[:, 0, :], dtype=torch.float32, device=device
         )
         self.root_rot_w = torch.tensor(
-            data["body_rotations"][:, 0, :], dtype=torch.float32, device=device
+            raw_body_rot[:, 0, :], dtype=torch.float32, device=device
         )
         self.root_lin_vel_w = torch.tensor(
-            data["body_linear_velocities"][:, 0, :], dtype=torch.float32, device=device
+            raw_body_vel[:, 0, :], dtype=torch.float32, device=device
         )
         self.root_ang_vel_w = torch.tensor(
-            data["body_angular_velocities"][:, 0, :], dtype=torch.float32, device=device
-        )
-        # Full rigid-body positions (WORLD) for AMP early termination:
-        # Shape: (T, B, 3)
-        self.body_pos_w = torch.tensor(
-            data["body_positions"], dtype=torch.float32, device=device
+            raw_body_ang[:, 0, :], dtype=torch.float32, device=device
         )
 
-        dof_pos_npz = torch.tensor(
-            data["dof_positions"], dtype=torch.float32, device=device
-        )
-        dof_vel_npz = torch.tensor(
-            data["dof_velocities"], dtype=torch.float32, device=device
-        )
+        # Full rigid-body positions
+        self.body_pos_w = torch.tensor(raw_body_pos, dtype=torch.float32, device=device)
+
+        dof_pos_npz = torch.tensor(raw_dof_pos, dtype=torch.float32, device=device)
+        dof_vel_npz = torch.tensor(raw_dof_vel, dtype=torch.float32, device=device)
 
         # ---- Reorder DOF to canonical ----
         self.dof_pos = dof_pos_npz.index_select(1, self._perm_npz_to_canonical)
@@ -114,11 +169,9 @@ class G1AMPDataset(Dataset):
 
         self.num_frames = self.amp_batch.shape[0]
         print(
-            f"[G1AMPDataset] Loaded {self.num_frames} frames. DOFs={self.dof_pos.shape[1]}"
+            f"[G1AMPDataset] Successfully loaded {self.num_frames} frames from {len(file_list)} files."
         )
-        print(f"[G1AMPDataset] Canonical DOF[0:5]: {canonical[:5]}")
-        print(f"[G1AMPDataset] NPZ DOF[0:5]: {npz_dof_names[:5]}")
-        print(f"[G1AMPDataset] NPZ BODY[0:5]: {npz_body_names[:5]}")
+        print(f"[G1AMPDataset] DOFs={self.dof_pos.shape[1]}")
 
     def __len__(self):
         return self.amp_batch.shape[0]
@@ -142,14 +195,3 @@ class G1AMPDataset(Dataset):
             batch_size, K, -1
         )
         return batch.reshape(batch_size, -1)
-
-
-# if __name__ == "__main__":
-#     ds = G1AMPDataset(
-#         "/home/valerio/g1_hybrid_prior/data_amp/LAFAN-G1/LAFAN_dance1_subject1_0_-1.npz",
-#         device="cuda",
-#     )
-#     print(ds.body_pos_w.shape)  # (T, B, 3)
-#     print(len(ds.npz_body_names))  # B
-#     print(ds.root_pos_w.shape)  # (T, 3)
-#     print(ds.root_rot_w.shape)  # (T, 4)
