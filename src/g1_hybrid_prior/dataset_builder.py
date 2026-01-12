@@ -27,8 +27,8 @@ def make_dataset(cfg, device):
     vel_mode = str(get_cfg_val("vel_mode", "central"))
     field_check(vel_mode, ("central", "backward"))
 
-    robot_name = str(get_cfg_val("robot", "g1"))
-    field_check(robot_name, ("g1"))
+    robot_name = str(get_cfg_val("robot"))
+    field_check(robot_name, ("g1", "g1_amp"))
 
     path = str(get_cfg_val("dataset_path"))
 

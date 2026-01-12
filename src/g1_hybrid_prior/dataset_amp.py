@@ -14,7 +14,7 @@ class G1AMPDataset(Dataset):
         file_path,
         num_amp_obs_steps: int = 2,
         device="cuda",
-        robot="g1",
+        robot="g1_amp",
         Z_UP=True,
         strict=True,
     ):
@@ -24,6 +24,11 @@ class G1AMPDataset(Dataset):
         if not self.file_path.exists():
             raise FileNotFoundError(
                 f"[G1AMPDataset] File or Directory not found: {self.file_path}"
+            )
+
+        if robot != "g1_amp":
+            raise ValueError(
+                f"[G1AMPDataset] Unsupported robot: {robot}. Only 'g1_amp' is supported with an AMP dataset."
             )
 
         # 1. RACCOLTA LISTA FILE
