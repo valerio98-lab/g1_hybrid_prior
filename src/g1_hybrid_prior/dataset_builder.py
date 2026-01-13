@@ -32,8 +32,6 @@ def make_dataset(cfg, device):
 
     path = str(get_cfg_val("dataset_path"))
 
-    num_amp_obs_steps = int(get_cfg_val("num_amp_obs_steps"))
-
     print(f"[DataManager] Initializing dataset type: '{mode}' from {path}")
 
     if mode == "ppo":
@@ -47,6 +45,7 @@ def make_dataset(cfg, device):
 
     elif mode == "ppo_amp":
         # Il dataset veloce per AMP (Discriminator training)
+        num_amp_obs_steps = int(get_cfg_val("num_amp_obs_steps"))
         return G1AMPDataset(
             file_path=path,
             device=device,

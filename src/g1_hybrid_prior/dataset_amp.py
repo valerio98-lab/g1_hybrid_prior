@@ -144,6 +144,7 @@ class G1AMPDataset(Dataset):
 
         # Full rigid-body positions
         self.body_pos_w = torch.tensor(raw_body_pos, dtype=torch.float32, device=device)
+        self.body_rot_w = torch.tensor(raw_body_rot, dtype=torch.float32, device=device)
 
         dof_pos_npz = torch.tensor(raw_dof_pos, dtype=torch.float32, device=device)
         dof_vel_npz = torch.tensor(raw_dof_vel, dtype=torch.float32, device=device)
