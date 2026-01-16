@@ -101,6 +101,12 @@ class G1AMPDataset(Dataset):
                             f"[G1AMPDataset] ⚠️ WARNING: Mismatch in DOF names in file {f.name}. Skipping."
                         )
                         continue
+                    curr_body_names = [str(x) for x in data["body_names"].tolist()]
+                    if curr_body_names != self.npz_body_names:
+                        print(
+                            f"[G1AMPDataset] ⚠️ WARNING: Mismatch in body names in file {f.name}. Skipping."
+                        )
+                        continue
 
                 # Appendiamo i dati
                 all_body_pos.append(data["body_positions"])

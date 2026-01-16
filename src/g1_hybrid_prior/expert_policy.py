@@ -12,7 +12,7 @@ class LowLevelExpertPolicy(nn.Module):
             device = "cuda" if torch.cuda.is_available() else "cpu"
         self.device = device
 
-        cfg_path = get_project_root() / "config" / "network.yaml"
+        cfg_path = get_project_root() / "config" / "ExpertPPO.yaml"
         with open(cfg_path, "r") as f:
             cfg = yaml.safe_load(f)
 
@@ -138,7 +138,7 @@ class LowLevelActor(nn.Module):
             device = "cuda" if torch.cuda.is_available() else "cpu"
         self.device = device
 
-        cfg_path = get_project_root() / "config" / "network.yaml"
+        cfg_path = get_project_root() / "config" / "ExpertPPO.yaml"
         with open(cfg_path, "r") as f:
             cfg = yaml.safe_load(f)
 
@@ -184,7 +184,7 @@ class LowLevelCritic(nn.Module):
             device = "cuda" if torch.cuda.is_available() else "cpu"
         self.device = device
 
-        cfg_path = get_project_root() / "config" / "network.yaml"
+        cfg_path = get_project_root() / "config" / "ExpertPPO.yaml"
         with open(cfg_path, "r") as f:
             cfg = yaml.safe_load(f)
 
@@ -202,7 +202,7 @@ class LowLevelCritic(nn.Module):
 #     import yaml
 #     from .helpers import get_project_root
 
-#     cfg_path = get_project_root() / "config" / "network.yaml"
+#     cfg_path = get_project_root() / "config" / "ExpertPPO.yaml"
 #     with open(cfg_path, "r") as f:
 #         cfg = yaml.safe_load(f)
 #     policy = LowLevelExpertPolicy(obs_dim=30, goal_dim=10, action_dim=29, cfg=cfg)

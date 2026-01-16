@@ -1,0 +1,24 @@
+
+low_level_expert_policy: 
+  type: MLPPolicy
+  ##Sigma settings
+  init_log_std: -2.9
+  sigma_fixed: True
+  log_std_min: -5.0
+  log_std_max: 1.0
+
+  encoder: 
+    units: [1024, 1024, 512]
+    activation: relu
+
+  decoder:
+    units: [512, 1024, 1024]
+    activation: relu
+
+  critic:
+    units: [1024, 1024, 512]
+    activation: relu
+
+  discriminator:
+    units: [1024, 1024, 512]
+    activation: relu
