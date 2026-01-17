@@ -1,5 +1,5 @@
 from .dataset import G1HybridPriorDataset
-from .dataset_amp import G1AMPDataset
+from .dataset import G1AMPDataset
 from typing import Tuple
 
 

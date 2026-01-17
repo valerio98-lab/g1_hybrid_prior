@@ -1,7 +1,7 @@
 import argparse
 import numpy as np
 from .robot_cfg import load_robot_cfg, RobotCfg
-from .helpers import get_project_root
+from ..helpers import get_project_root
 
 
 def split_row(row: np.ndarray, robot_cfg: RobotCfg):

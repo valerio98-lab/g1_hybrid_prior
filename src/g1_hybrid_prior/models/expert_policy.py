@@ -2,10 +2,10 @@ import torch
 import torch.nn as nn
 import yaml
 
-from .helpers import get_project_root
+from ..helpers import get_project_root
 
 
-class LowLevelExpertPolicy(nn.Module):
+class ExpertPolicy(nn.Module):
     def __init__(self, obs_dim, goal_dim, action_dim, device=None):
         super().__init__()
         if device is None:
@@ -31,8 +31,8 @@ class LowLevelExpertPolicy(nn.Module):
         self.log_std = nn.Parameter(
             torch.full((action_dim,), init_log_std, dtype=torch.float32),
             requires_grad=not sigma_fixed,
-        )  # learnable log standard deviation. PPO can use this directly during training.
-        # Obv for a fixed sigma requires_grad=False
+        )  # learnable log standard deviation. PPO can use this directly
+        # during training. Obv for a fixed sigma requires_grad=False
 
         self.to(self.device)
 

@@ -7,6 +7,8 @@ imitation_learning_policy:
   log_std_min: -5.0
   log_std_max: 1.0
   latent_dim: 64
+  use_expert_decoder: True
+  
 
   prior: 
     units: [1024, 1024, 512]
@@ -15,4 +17,20 @@ imitation_learning_policy:
   posterior:
     units: [1024, 1024, 512]
     activation: relu
-  
+
+  action_decoder:
+    hidden_units: [1024, 1024]
+    activation: relu
+
+  rvq_cfg:
+    num_quantizers: 8
+    codebook_size: 1024
+    quantize_dropout: True
+    decay: 0.99
+    eps : 1e-5
+    commitment_weight: 1.0
+    kmeans_init: False
+    kmeans_iters: 10
+    codebook_dim: 64
+    dim: 64
+    shared_codebooks: False

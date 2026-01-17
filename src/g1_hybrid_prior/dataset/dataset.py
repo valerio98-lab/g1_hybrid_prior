@@ -4,7 +4,7 @@ import torch
 import numpy as np
 from tqdm import tqdm
 from .robot_cfg import RobotCfg, load_robot_cfg
-from .helpers import (
+from ..helpers import (
     get_project_root,
     quat_normalize,
     quat_mul,

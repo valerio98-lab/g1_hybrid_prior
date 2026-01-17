@@ -1,10 +1,9 @@
 import torch
 import numpy as np
 from torch.utils.data import Dataset
-from typing import List
 from pathlib import Path  # Aggiunto per gestire i path
 
-from .helpers import quat_rotate_inv, quat_normalize, get_project_root
+from ..helpers import quat_rotate_inv, quat_normalize, get_project_root
 from .robot_cfg import load_robot_cfg
 
 

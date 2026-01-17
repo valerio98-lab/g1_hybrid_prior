@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import List, Optional
 from tqdm import tqdm
 from .robot_cfg import RobotCfg, load_robot_cfg
-from .helpers import get_project_root
+from ..helpers import get_project_root
 
 
 class EndEffectorAugmenter:
