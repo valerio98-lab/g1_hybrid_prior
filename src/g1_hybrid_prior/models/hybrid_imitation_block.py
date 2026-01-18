@@ -48,8 +48,8 @@ class ImitationBlock(nn.Module):
         )
 
         dec_cfg = net_cfg["imitation_learning_policy"]["action_decoder"]
-        self.use_expert_rollouts = net_cfg["imitation_learning_policy"].get(
-            "use_expert_rollouts", True
+        self.use_expert_decoder = net_cfg["imitation_learning_policy"].get(
+            "use_expert_decoder", True
         )
 
         if self.use_expert_decoder:
@@ -126,7 +126,7 @@ class ImitationBlock(nn.Module):
         out: Dict[str, torch.Tensor],
         a_expert_mu: torch.Tensor,
         weights: LossWeights,
-        next_out: Optional[Dict[str, torch.Tensor]] = None,
+        prev_out: Optional[Dict[str, torch.Tensor]] = None,
     ) -> Dict[str, torch.Tensor]:
         """
         out expected keys:
@@ -156,15 +156,14 @@ class ImitationBlock(nn.Module):
 
         # regularization loss (temporal consistency): minimize changes between latent embeddings of neighboring frames.
         loss_reg = torch.zeros((), device=a_hat.device, dtype=a_hat.dtype)
-        if weights.reg > 0.0 and next_out is not None:
-            zp_next = next_out["zp"]
-            y_hat_next = next_out.get("y_hat", None)
-            if y_hat_next is None:
+        if weights.reg > 0.0 and prev_out is not None:
+            prev_zp = prev_out["zp"]
+            prev_y_hat = prev_out.get("y_hat", None)
+            if prev_y_hat is None:
                 raise ValueError(
-                    "next_out must contain 'y_hat' when computing regularization loss."
+                    "prev_out must contain 'y_hat' when computing regularization loss."
                 )
-            loss_reg = F.mse_loss(zp, zp_next) + F.mse_loss(y_hat, y_hat_next)
-
+            loss_reg = F.mse_loss(zp, prev_zp) + F.mse_loss(y_hat, prev_y_hat)
         # vq loss default = 0 if not present
         loss_vq = torch.zeros((), device=a_hat.device, dtype=a_hat.dtype)
         vq_info = out.get("vq_info", None)

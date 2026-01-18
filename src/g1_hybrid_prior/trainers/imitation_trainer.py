@@ -24,7 +24,7 @@ class TrainerCfg:
     ckpt_dir: str = "runs/ckpts"
     ckpt_every: int = 5_000
     keep_last_k: int = 5
-    save_best: bool = False  # optional
+    save_best: bool = True  # optional
     best_metric: str = "loss_total"  # metric name from eval stats
     best_mode: str = "min"  # "min" or "max"
 
@@ -38,8 +38,6 @@ class ImitationTrainer:
       batch["s"]        (B, s_dim)
       batch["goal"]     (B, goal_dim)
       batch["a_expert"] (B, action_dim)
-    opzionali (per reg temporal):
-      batch["s_next"], batch["goal_next"]
     """
 
     def __init__(
@@ -57,7 +55,6 @@ class ImitationTrainer:
         self.device = torch.device(cfg.device if torch.cuda.is_available() else "cpu")
         self.model.to(self.device)
 
-        # optimizer: SOLO parametri trainabili
         params = [p for p in self.model.parameters() if p.requires_grad]
         if len(params) == 0:
             raise RuntimeError(
@@ -71,7 +68,7 @@ class ImitationTrainer:
             weight_decay=cfg.weight_decay,
         )
 
-        self.scaler = torch.cuda.amp.GradScaler(
+        self.scaler = torch.amp.GradScaler(
             enabled=cfg.use_amp and self.device.type == "cuda"
         )
 
@@ -86,13 +83,27 @@ class ImitationTrainer:
         self.ckpt_dir = base
         self.ckpt_dir.mkdir(parents=True, exist_ok=True)
 
-        # best checkpoint tracking (optional)
         self.best_value: Optional[float] = None
         self.best_path = self.ckpt_dir / "ckpt_best.pt"
 
-    # -------------------------
-    # Public API
-    # -------------------------
+        self.prev_out = None
+        self.prev_size = None
+
+    def _masked_mse(
+        self, x: torch.Tensor, y: torch.Tensor, mask: torch.Tensor
+    ) -> torch.Tensor:
+        """
+        x,y: (N, D)
+        mask: (N,) bool or (N,1)
+        returns scalar masked mean over N, averaged per-sample over D.
+        """
+        if mask.dim() == 1:
+            mask = mask.unsqueeze(-1)
+        mask_f = mask.to(dtype=x.dtype)
+        # per-sample mse (N,1)
+        per = ((x - y) ** 2).mean(dim=-1, keepdim=True)
+        denom = mask_f.sum().clamp_min(1.0)
+        return (per * mask_f).sum() / denom
 
     def train_step(self, batch: Dict[str, torch.Tensor]) -> Dict[str, float]:
         self.model.train()
@@ -101,99 +112,116 @@ class ImitationTrainer:
         goal = batch["goal"].to(self.device)
         a_expert = batch["a_expert"].to(self.device)
 
-        s_next = batch.get("s_next", None)
-        goal_next = batch.get("goal_next", None)
-        if s_next is not None:
-            s_next = s_next.to(self.device)
-        if goal_next is not None:
-            goal_next = goal_next.to(self.device)
+        valid_prev = batch.get("valid_prev", None)
+        if valid_prev is not None:
+            valid_prev = valid_prev.to(self.device, dtype=torch.bool)
 
         self.optim.zero_grad(set_to_none=True)
 
-        with torch.cuda.amp.autocast(enabled=self.scaler.is_enabled()):
+        with torch.cuda.autocast(enabled=self.scaler.is_enabled()):
             out = self.model(s, goal)
 
-            next_out = None
-            if (
-                s_next is not None
-                and goal_next is not None
-                and getattr(self.loss_weights, "reg", 0.0) > 0.0
-            ):
-                next_out = self.model(s_next, goal_next)
+            batch_size_zp = out["zp"].shape[0]
+            latent_dim_zp = out["zp"].shape[1]
+            if (self.prev_out is None) or (self.prev_size != batch_size_zp):
+                self.prev_out = {
+                    "zp": out["zp"].detach().clone(),
+                    "y_hat": out["y_hat"].detach().clone(),
+                }
+                self.prev_size = batch_size_zp
+
+            weights = self.loss_weights
+            if hasattr(weights, "reg"):
+                weights = type(weights)(**{**weights.__dict__, "reg": 0.0})
 
             losses_t = self.model.compute_imitation_losses(
-                out=out,
-                a_expert_mu=a_expert,
-                weights=self.loss_weights,
-                next_out=next_out,
+                out=out, a_expert_mu=a_expert, weights=weights, prev_out=None
             )
 
+            loss_reg = torch.zeros((), device=self.device, dtype=out["zp"].dtype)
+            if getattr(self.loss_weights, "reg", 0.0) > 0.0:
+                if valid_prev is None:
+                    raise RuntimeError(
+                        "Temporal reg enabled (weights.reg > 0) but batch['valid_prev'] is missing."
+                    )
+                loss_reg = self._masked_mse(
+                    out["zp"], self.prev_out["zp"], valid_prev
+                ) + self._masked_mse(out["y_hat"], self.prev_out["y_hat"], valid_prev)
+
+                losses_t["loss_reg"] = loss_reg
+                losses_t["loss_total"] = (
+                    losses_t["loss_total"] + self.loss_weights.reg * loss_reg
+                )
+
+            else:
+                losses_t["loss_reg"] = loss_reg  # keep explicit
+
             loss_total = losses_t["loss_total"]
+            self.prev_out["zp"] = out["zp"].detach().clone()
+            self.prev_out["y_hat"] = out["y_hat"].detach().clone()
 
         # backward + step
         if self.scaler.is_enabled():
             self.scaler.scale(loss_total).backward()
-            self._maybe_clip_grads()
+            grad_norm = self._clip_grads()
             self.scaler.step(self.optim)
             self.scaler.update()
         else:
             loss_total.backward()
-            self._maybe_clip_grads()
+            grad_norm = self._clip_grads()
             self.optim.step()
 
         self.global_step += 1
 
         stats = self._stats_from_out_and_losses(out, losses_t)
+        stats["optim/grad_norm"] = grad_norm
+        stats["optim/lr"] = float(self.optim.param_groups[0]["lr"])
 
         # logging
         if self.writer is not None and (self.global_step % self.cfg.log_every == 0):
             self._tb_log(stats, prefix="train")
 
         # checkpointing
-        self._maybe_save_checkpoint(train_stats=stats)
+        self._save_checkpoint(train_stats=stats)
 
         return stats
 
     @torch.no_grad()
     def eval_step(self, batch: Dict[str, torch.Tensor]) -> Dict[str, float]:
+        self.prev_out = None
         self.model.eval()
 
         s = batch["s"].to(self.device)
         goal = batch["goal"].to(self.device)
         a_expert = batch["a_expert"].to(self.device)
 
-        s_next = batch.get("s_next", None)
-        goal_next = batch.get("goal_next", None)
-        if s_next is not None:
-            s_next = s_next.to(self.device)
-        if goal_next is not None:
-            goal_next = goal_next.to(self.device)
-
         out = self.model(s, goal)
 
-        next_out = None
-        if (
-            s_next is not None
-            and goal_next is not None
-            and getattr(self.loss_weights, "reg", 0.0) > 0.0
-        ):
-            next_out = self.model(s_next, goal_next)
+        if self.prev_out is None:
+            self.prev_out = {
+                "zp": out["zp"].detach(),
+                "y_hat": out["y_hat"].detach(),
+            }
 
         losses_t = self.model.compute_imitation_losses(
             out=out,
             a_expert_mu=a_expert,
             weights=self.loss_weights,
-            next_out=next_out,
+            prev_out=self.prev_out,
         )
+        self.prev_out = {
+            "zp": out["zp"].detach(),
+            "y_hat": out["y_hat"].detach(),
+        }
 
         stats = self._stats_from_out_and_losses(out, losses_t)
 
-        if self.writer is not None:
+        if self.writer is not None and (self.global_step % self.cfg.log_every == 0):
             self._tb_log(stats, prefix="eval")
 
         # optional "best ckpt" on eval
         if self.cfg.save_best:
-            self._maybe_update_best(stats)
+            self._update_best(stats)
 
         return stats
 
@@ -218,17 +246,15 @@ class ImitationTrainer:
             self.scaler.load_state_dict(payload["scaler"])
         self.global_step = int(payload.get("global_step", 0))
 
-    # -------------------------
-    # Internals
-    # -------------------------
-
-    def _maybe_clip_grads(self) -> None:
+    def _clip_grads(self) -> float:
         if self.cfg.grad_clip_norm and self.cfg.grad_clip_norm > 0:
             if self.scaler.is_enabled():
                 self.scaler.unscale_(self.optim)
-            torch.nn.utils.clip_grad_norm_(
+            grad_norm = torch.nn.utils.clip_grad_norm_(
                 self._trainable_params(), self.cfg.grad_clip_norm
             )
+            return float(grad_norm.detach().item())
+        return 0.0
 
     def _trainable_params(self):
         return [p for p in self.model.parameters() if p.requires_grad]
@@ -248,10 +274,72 @@ class ImitationTrainer:
         # RVQ extras
         if "vq_info" in out and isinstance(out["vq_info"], dict):
             vq_info = out["vq_info"]
+
+            # num_active + scalar loss
             if "num_active" in vq_info:
-                stats["rvq/num_active"] = float(vq_info["num_active"].detach().item())
+                num_active = int(vq_info["num_active"].detach().item())
+                stats["rvq/num_active"] = float(num_active)
+            else:
+                num_active = 0
+
             if "loss_vq" in vq_info:
                 stats["rvq/loss_vq"] = float(vq_info["loss_vq"].detach().item())
+
+            # per-layer losses (commitment loss per quantizer)
+            if "losses_per_layer" in vq_info:
+                lpl = vq_info["losses_per_layer"].detach()
+                # expected shape (K,) - robust if (B,K)
+                if lpl.ndim == 2:
+                    lpl = lpl.mean(dim=0)
+                for i in range(lpl.shape[0]):
+                    stats[f"rvq/loss_layer_{i}"] = float(lpl[i].item())
+
+            # codebook usage + perplexity (per quantizer)
+            if "indices" in vq_info:
+                idx = vq_info["indices"].detach()  # (B, K_active)
+                if idx.ndim == 2 and idx.numel() > 0:
+                    B, K = idx.shape
+
+                    # try to get codebook_size from model.rvq.cfg
+                    codebook_size = 0
+                    rvq = getattr(self.model, "rvq", None)
+                    if rvq is not None and hasattr(rvq, "cfg"):
+                        codebook_size = int(getattr(rvq.cfg, "codebook_size", 0))
+
+                    perplexities = []
+
+                    for q in range(K):
+                        uq = torch.unique(idx[:, q]).numel()
+                        stats[f"rvq/unique_codes_q{q}"] = float(uq)
+
+                        if codebook_size > 0:
+                            usage_ratio = uq / codebook_size
+                            stats[f"rvq/usage_ratio_q{q}"] = float(usage_ratio)
+                            stats[f"rvq/dead_fraction_q{q}"] = float(1.0 - usage_ratio)
+                            counts = torch.bincount(
+                                idx[:, q], minlength=codebook_size
+                            ).float()
+
+                        else:
+                            counts = torch.bincount(idx[:, q]).float()
+
+                        p = counts / (counts.sum() + 1e-8)
+                        entropy = -(p * (p + 1e-8).log()).sum()
+                        perplexity = torch.exp(entropy)
+                        stats[f"rvq/perplexity_q{q}"] = float(perplexity.item())
+                        perplexities.append(perplexity)
+
+                    # mean perplexity across active quantizers
+                    if len(perplexities) > 0:
+                        stats["rvq/perplexity_mean"] = float(
+                            torch.stack(perplexities).mean().item()
+                        )
+                        stats["rvq/perplexity_min"] = float(
+                            torch.stack(perplexities).min().item()
+                        )
+                        stats["rvq/perplexity_max"] = float(
+                            torch.stack(perplexities).max().item()
+                        )
 
         # latent norms (debug)
         if "y_hat" in out:
@@ -269,7 +357,7 @@ class ImitationTrainer:
 
         return stats
 
-    def _maybe_save_checkpoint(self, train_stats: Dict[str, float]) -> None:
+    def _save_checkpoint(self, train_stats: Dict[str, float]) -> None:
         if self.cfg.ckpt_every <= 0:
             return
         if self.global_step % self.cfg.ckpt_every != 0:
@@ -281,7 +369,7 @@ class ImitationTrainer:
 
         # optionale: best anche su train (io lo lascio su eval di default)
         # if self.cfg.save_best:
-        #     self._maybe_update_best(train_stats)
+        #     self._update_best(train_stats)
 
     def _rotate_checkpoints(self) -> None:
         k = int(self.cfg.keep_last_k)
@@ -299,7 +387,7 @@ class ImitationTrainer:
             except OSError:
                 pass
 
-    def _maybe_update_best(self, eval_stats: Dict[str, float]) -> None:
+    def _update_best(self, eval_stats: Dict[str, float]) -> None:
         metric = self.cfg.best_metric
         if metric not in eval_stats:
             return

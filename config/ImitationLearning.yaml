@@ -32,5 +32,4 @@ imitation_learning_policy:
     kmeans_init: False
     kmeans_iters: 10
     codebook_dim: 64
-    dim: 64
-    shared_codebooks: False
+    shared_codebook: False

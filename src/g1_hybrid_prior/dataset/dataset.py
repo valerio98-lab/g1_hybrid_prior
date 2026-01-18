@@ -98,16 +98,11 @@ class G1HybridPriorDataset(Dataset):
                 self._load_block(0)
             else:
                 self.lazy_load = False
-                # ORA FUNZIONA: _load_file esiste
                 self.dataset = self._load_file(self.file_path)
                 self.num_frames = len(self.dataset)
 
-        # Gestione caso file singolo lazy (già gestito sopra nell'if is_file, ma teniamo per sicurezza logica)
-        # Nota: ho rimosso la duplicazione di logica che avevi in fondo all'init precedente
-
     def _load_file(self, path: Path):
         """Helper per caricare un singolo file CSV e restituire la lista di frame."""
-        # Usa header=None perché i tuoi file augmented non hanno header
         try:
             data = np.loadtxt(path, delimiter=",", skiprows=self.header_rows)
         except Exception as e:
@@ -117,7 +112,6 @@ class G1HybridPriorDataset(Dataset):
         if data.ndim == 1:
             data = data[None, :]
 
-        # Chiama frame_building che ora RESTITUISCE la lista
         return self.__frame_building__(data)
 
     def __frame_building__(self, data):
@@ -132,7 +126,7 @@ class G1HybridPriorDataset(Dataset):
                 f"File mismatch: expected {self.total_expected_cols} columns, found {data.shape[1]}"
             )
 
-        frames_list = []  # Buffer locale
+        frames_list = []
 
         for row in range(data.shape[0]):
             cur = self.__split_row__(data[row], self.robot_cfg)
@@ -233,7 +227,7 @@ class G1HybridPriorDataset(Dataset):
 
             frames_list.append(frame)
 
-        return frames_list  # Ritorna la lista!
+        return frames_list
 
     def __split_row__(self, row: np.ndarray, robot_cfg: RobotCfg):
         root_end = robot_cfg.root_dim

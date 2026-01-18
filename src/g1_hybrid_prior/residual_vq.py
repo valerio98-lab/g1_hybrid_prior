@@ -61,8 +61,8 @@ class ResidualVQ(nn.Module):
         )
 
         self.quantize_dropout = bool(cfg.quantize_dropout) and self.num_quantizers > 1
-        self.dropout_cutoff_index = int(cfg.dropout_cutoff_index)
-        self.dropout_multiple_of = int(cfg.dropout_multiple_of)
+        self.dropout_cutoff_index = dropout_cutoff_index
+        self.dropout_multiple_of = dropout_multiple_of
 
         assert self.dropout_cutoff_index >= 0
         assert self.dropout_multiple_of >= 1
@@ -110,7 +110,7 @@ class ResidualVQ(nn.Module):
 
         if self.dropout_multiple_of != 1:
             # make (#active) a multiple of dropout_multiple_of
-            active = _round_up_multiple(cutoff_idx + 1, self.dropout_multiple_of)
+            active = self._round_up_multiple(cutoff_idx + 1, self.dropout_multiple_of)
             active = min(active, self.num_quantizers)
             return int(active)
 
