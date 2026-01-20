@@ -7,6 +7,7 @@ from typing import Any, Dict, Optional
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from torch.utils.tensorboard import SummaryWriter
 
 
@@ -17,6 +18,7 @@ class TrainerCfg:
     weight_decay: float = 0.0
     grad_clip_norm: float = 1.0
     use_amp: bool = False
+    best_ema_beta: float = 0.98
 
     log_every: int = 50
 
@@ -25,10 +27,19 @@ class TrainerCfg:
     ckpt_every: int = 5_000
     keep_last_k: int = 5
     save_best: bool = True  # optional
-    best_metric: str = "loss_total"  # metric name from eval stats
+    best_metric: str = "loss_action"  # metric name from eval stats
     best_mode: str = "min"  # "min" or "max"
 
     device: str = "cuda"
+
+
+@dataclass
+class LossWeights:
+    action: float = 1.0
+    mm: float = 0.1
+    reg: float = 0.0
+    l2: float = 0.0
+    vq: float = 1.0  # keep as 1; you can tune later
 
 
 class ImitationTrainer:
@@ -51,6 +62,8 @@ class ImitationTrainer:
         self.model = model
         self.loss_weights = loss_weights
         self.cfg = cfg
+
+        self.best_ema: Optional[float] = None
 
         self.device = torch.device(cfg.device if torch.cuda.is_available() else "cpu")
         self.model.to(self.device)
@@ -130,31 +143,13 @@ class ImitationTrainer:
                 }
                 self.prev_size = batch_size_zp
 
-            weights = self.loss_weights
-            if hasattr(weights, "reg"):
-                weights = type(weights)(**{**weights.__dict__, "reg": 0.0})
-
-            losses_t = self.model.compute_imitation_losses(
-                out=out, a_expert_mu=a_expert, weights=weights, prev_out=None
+            losses_t = self.compute_imitation_losses(
+                out=out,
+                a_expert_mu=a_expert,
+                weights=self.loss_weights,
+                prev_out=self.prev_out,
+                valid_prev=valid_prev,
             )
-
-            loss_reg = torch.zeros((), device=self.device, dtype=out["zp"].dtype)
-            if getattr(self.loss_weights, "reg", 0.0) > 0.0:
-                if valid_prev is None:
-                    raise RuntimeError(
-                        "Temporal reg enabled (weights.reg > 0) but batch['valid_prev'] is missing."
-                    )
-                loss_reg = self._masked_mse(
-                    out["zp"], self.prev_out["zp"], valid_prev
-                ) + self._masked_mse(out["y_hat"], self.prev_out["y_hat"], valid_prev)
-
-                losses_t["loss_reg"] = loss_reg
-                losses_t["loss_total"] = (
-                    losses_t["loss_total"] + self.loss_weights.reg * loss_reg
-                )
-
-            else:
-                losses_t["loss_reg"] = loss_reg  # keep explicit
 
             loss_total = losses_t["loss_total"]
             self.prev_out["zp"] = out["zp"].detach().clone()
@@ -181,49 +176,147 @@ class ImitationTrainer:
         if self.writer is not None and (self.global_step % self.cfg.log_every == 0):
             self._tb_log(stats, prefix="train")
 
+        if self.cfg.save_best:
+            self._update_best(stats=stats)
+
         # checkpointing
         self._save_checkpoint(train_stats=stats)
 
         return stats
 
-    @torch.no_grad()
-    def eval_step(self, batch: Dict[str, torch.Tensor]) -> Dict[str, float]:
-        self.prev_out = None
-        self.model.eval()
+    # @torch.no_grad()
+    # def eval_step(self, batch: Dict[str, torch.Tensor]) -> Dict[str, float]:
+    #     self.prev_out = None
+    #     self.model.eval()
 
-        s = batch["s"].to(self.device)
-        goal = batch["goal"].to(self.device)
-        a_expert = batch["a_expert"].to(self.device)
+    #     s = batch["s"].to(self.device)
+    #     goal = batch["goal"].to(self.device)
+    #     a_expert = batch["a_expert"].to(self.device)
 
-        out = self.model(s, goal)
+    #     out = self.model(s, goal)
 
-        if self.prev_out is None:
-            self.prev_out = {
-                "zp": out["zp"].detach(),
-                "y_hat": out["y_hat"].detach(),
-            }
+    #     if self.prev_out is None:
+    #         self.prev_out = {
+    #             "zp": out["zp"].detach(),
+    #             "y_hat": out["y_hat"].detach(),
+    #         }
 
-        losses_t = self.model.compute_imitation_losses(
-            out=out,
-            a_expert_mu=a_expert,
-            weights=self.loss_weights,
-            prev_out=self.prev_out,
+    #     losses_t = self.compute_imitation_losses(
+    #         out=out,
+    #         a_expert_mu=a_expert,
+    #         weights=self.loss_weights,
+    #         prev_out=self.prev_out,
+    #     )
+    #     self.prev_out = {
+    #         "zp": out["zp"].detach(),
+    #         "y_hat": out["y_hat"].detach(),
+    #     }
+
+    #     stats = self._stats_from_out_and_losses(out, losses_t)
+
+    #     if self.writer is not None and (self.global_step % self.cfg.log_every == 0):
+    #         self._tb_log(stats, prefix="eval")
+
+    #     # optional "best ckpt" on eval
+    #     if self.cfg.save_best:
+    #         self._update_best(stats)
+
+    #     return stats
+
+    def _update_best(self, stats: Dict[str, float]) -> None:
+        metric = self.cfg.best_metric
+        if metric not in stats:
+            return
+
+        x = float(stats[metric])
+
+        # EMA update
+        if self.best_ema is None:
+            self.best_ema = x
+        else:
+            b = float(self.cfg.best_ema_beta)
+            b = max(0.0, min(0.9999, b))
+            self.best_ema = b * self.best_ema + (1.0 - b) * x
+        value = self.best_ema
+
+        if self.best_value is None:
+            better = True
+        else:
+            if self.cfg.best_mode == "min":
+                better = value < self.best_value
+            elif self.cfg.best_mode == "max":
+                better = value > self.best_value
+            else:
+                raise ValueError("best_mode must be 'min' or 'max'")
+
+        if better:
+            self.best_value = value
+            self.save(self.best_path)
+
+    def compute_imitation_losses(
+        self,
+        out: Dict[str, torch.Tensor],
+        a_expert_mu: torch.Tensor,
+        weights: LossWeights,
+        prev_out: Optional[Dict[str, torch.Tensor]] = None,
+        valid_prev: Optional[torch.Tensor] = None,
+    ) -> Dict[str, torch.Tensor]:
+        """
+        out expected keys:
+        a_hat, zp, z, y_hat, z_hat
+        optionally vq_info.loss_vq
+        next_out (optional) keys:
+        zp, y_hat
+
+        Returns dict with:
+        loss_total + individual losses
+
+        This function implement the losses described in the paper section 4.3.1 formula (6).
+        1) action reconstruction loss
+        2) margin-minimization loss
+        3) regularization loss (temporal consistency)
+        4) Commitment loss (VQ loss)
+        """
+        a_hat = out["a_hat"]
+        zp = out["zp"]  # Prior latent vector
+        y_hat = out["y_hat"]
+        z_hat = out["z_hat"]  # Prior + quantized residual
+
+        # action reconstruction loss
+        loss_action = F.mse_loss(a_hat, a_expert_mu)
+        # margin-minimization: push prior to be predictive / reduce residual energy
+        loss_mm = F.mse_loss(z_hat.detach(), zp)
+
+        # regularization loss (temporal consistency): minimize changes between latent embeddings of neighboring frames.
+        loss_reg = torch.zeros((), device=a_hat.device, dtype=a_hat.dtype)
+        if weights.reg > 0.0:
+            if prev_out is None or valid_prev is None:
+                raise RuntimeError(
+                    "Temporal reg enabled (weights.reg > 0) but batch['valid_prev'] or prev_out is missing."
+                )
+            loss_reg = self._masked_mse(
+                out["zp"], prev_out["zp"], valid_prev
+            ) + self._masked_mse(y_hat, prev_out["y_hat"], valid_prev)
+        # vq loss default = 0 if not present
+        loss_vq = torch.zeros((), device=a_hat.device, dtype=a_hat.dtype)
+        vq_info = out.get("vq_info", None)
+        if isinstance(vq_info, dict) and "loss_vq" in vq_info:
+            loss_vq = vq_info["loss_vq"]
+
+        loss_total = (
+            weights.action * loss_action
+            + weights.mm * loss_mm
+            + weights.reg * loss_reg
+            + weights.vq * loss_vq
         )
-        self.prev_out = {
-            "zp": out["zp"].detach(),
-            "y_hat": out["y_hat"].detach(),
+
+        return {
+            "loss_total": loss_total,
+            "loss_action": loss_action,
+            "loss_mm": loss_mm,
+            "loss_reg": loss_reg,
+            "loss_commit": loss_vq,
         }
-
-        stats = self._stats_from_out_and_losses(out, losses_t)
-
-        if self.writer is not None and (self.global_step % self.cfg.log_every == 0):
-            self._tb_log(stats, prefix="eval")
-
-        # optional "best ckpt" on eval
-        if self.cfg.save_best:
-            self._update_best(stats)
-
-        return stats
 
     def save(self, path: str | Path) -> None:
         path = Path(path)
@@ -235,6 +328,8 @@ class ImitationTrainer:
             "optim": self.optim.state_dict(),
             "scaler": self.scaler.state_dict() if self.scaler is not None else None,
             "cfg": self.cfg.__dict__,
+            "best_value": self.best_value,
+            "best_ema": self.best_ema,
         }
         torch.save(payload, str(path))
 
@@ -242,6 +337,8 @@ class ImitationTrainer:
         payload = torch.load(str(path), map_location=self.device)
         self.model.load_state_dict(payload["model"], strict=strict)
         self.optim.load_state_dict(payload["optim"])
+        self.best_value = payload.get("best_value", None)
+        self.best_ema = payload.get("best_ema", None)
         if payload.get("scaler", None) is not None and self.scaler is not None:
             self.scaler.load_state_dict(payload["scaler"])
         self.global_step = int(payload.get("global_step", 0))
@@ -367,10 +464,6 @@ class ImitationTrainer:
         self.save(ckpt_path)
         self._rotate_checkpoints()
 
-        # optionale: best anche su train (io lo lascio su eval di default)
-        # if self.cfg.save_best:
-        #     self._update_best(train_stats)
-
     def _rotate_checkpoints(self) -> None:
         k = int(self.cfg.keep_last_k)
         if k <= 0:
@@ -386,24 +479,3 @@ class ImitationTrainer:
                 p.unlink()
             except OSError:
                 pass
-
-    def _update_best(self, eval_stats: Dict[str, float]) -> None:
-        metric = self.cfg.best_metric
-        if metric not in eval_stats:
-            return
-
-        value = float(eval_stats[metric])
-
-        if self.best_value is None:
-            better = True
-        else:
-            if self.cfg.best_mode == "min":
-                better = value < self.best_value
-            elif self.cfg.best_mode == "max":
-                better = value > self.best_value
-            else:
-                raise ValueError("best_mode must be 'min' or 'max'")
-
-        if better:
-            self.best_value = value
-            self.save(self.best_path)

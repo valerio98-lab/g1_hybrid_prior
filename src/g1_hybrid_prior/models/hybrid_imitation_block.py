@@ -1,11 +1,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, Optional
+from typing import Dict
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 
 from ..utils import validate_imitation_cfg, Activation
 from ..residual_vq import ResidualVQ, RVQCfg
@@ -121,70 +120,6 @@ class ImitationBlock(nn.Module):
         zp = self.prior(s_cur)
         return self.decoder(s_cur, zp)
 
-    @staticmethod
-    def compute_imitation_losses(
-        out: Dict[str, torch.Tensor],
-        a_expert_mu: torch.Tensor,
-        weights: LossWeights,
-        prev_out: Optional[Dict[str, torch.Tensor]] = None,
-    ) -> Dict[str, torch.Tensor]:
-        """
-        out expected keys:
-        a_hat, zp, z, y_hat, z_hat
-        optionally vq_info.loss_vq
-        next_out (optional) keys:
-        zp, y_hat
-
-        Returns dict with:
-        loss_total + individual losses
-
-        This function implement the losses described in the paper section 4.3.1 formula (6).
-        1) action reconstruction loss
-        2) margin-minimization loss
-        3) regularization loss (temporal consistency)
-        4) Commitment loss (VQ loss)
-        """
-        a_hat = out["a_hat"]
-        zp = out["zp"]  # Prior latent vector
-        y_hat = out.get("y_hat", None)
-        z_hat = out["z_hat"]  # Prior + quantized residual
-
-        # action reconstruction loss
-        loss_action = F.mse_loss(a_hat, a_expert_mu)
-        # margin-minimization: push prior to be predictive / reduce residual energy
-        loss_mm = F.mse_loss(z_hat.detach(), zp)
-
-        # regularization loss (temporal consistency): minimize changes between latent embeddings of neighboring frames.
-        loss_reg = torch.zeros((), device=a_hat.device, dtype=a_hat.dtype)
-        if weights.reg > 0.0 and prev_out is not None:
-            prev_zp = prev_out["zp"]
-            prev_y_hat = prev_out.get("y_hat", None)
-            if prev_y_hat is None:
-                raise ValueError(
-                    "prev_out must contain 'y_hat' when computing regularization loss."
-                )
-            loss_reg = F.mse_loss(zp, prev_zp) + F.mse_loss(y_hat, prev_y_hat)
-        # vq loss default = 0 if not present
-        loss_vq = torch.zeros((), device=a_hat.device, dtype=a_hat.dtype)
-        vq_info = out.get("vq_info", None)
-        if isinstance(vq_info, dict) and "loss_vq" in vq_info:
-            loss_vq = vq_info["loss_vq"]
-
-        loss_total = (
-            weights.action * loss_action
-            + weights.mm * loss_mm
-            + weights.reg * loss_reg
-            + weights.vq * loss_vq
-        )
-
-        return {
-            "loss_total": loss_total,
-            "loss_action": loss_action,
-            "loss_mm": loss_mm,
-            "loss_reg": loss_reg,
-            "loss_commit": loss_vq,
-        }
-
     def forward(
         self, s_cur: torch.Tensor, goal: torch.Tensor
     ) -> Dict[str, torch.Tensor]:
@@ -214,15 +149,6 @@ class ImitationBlock(nn.Module):
             "z_hat": z_hat,
             "vq_info": vq_info,
         }
-
-
-@dataclass
-class LossWeights:
-    action: float = 1.0
-    mm: float = 0.1
-    reg: float = 0.0
-    l2: float = 0.0
-    vq: float = 1.0  # keep as 1; you can tune later
 
 
 class PriorNet(nn.Module):
