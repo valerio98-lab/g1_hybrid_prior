@@ -40,7 +40,6 @@ g1:
   body_names: 
     - pelvis
     - torso_link
-    - head_link
     - left_knee_link
     - right_knee_link
     - left_ankle_roll_link

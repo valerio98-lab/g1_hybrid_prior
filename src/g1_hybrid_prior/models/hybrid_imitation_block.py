@@ -1,12 +1,14 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 from typing import Dict
 
 import torch
 import torch.nn as nn
 
+import yaml
+
 from ..utils import validate_imitation_cfg, Activation
+from ..helpers import get_project_root
 from ..residual_vq import ResidualVQ, RVQCfg
 from .expert_policy import Decoder
 
@@ -27,7 +29,6 @@ class ImitationBlock(nn.Module):
         s_dim: int,
         goal_dim: int,
         action_dim: int,
-        net_cfg: dict,
         expert_decoder: Decoder = None,
     ):
         super().__init__()
@@ -35,15 +36,21 @@ class ImitationBlock(nn.Module):
         self.goal_dim = int(goal_dim)
         self.action_dim = int(action_dim)
 
+        net_cfg_path = str(get_project_root() / "config/ImitationLearning.yaml")
+        with open(net_cfg_path, "r") as f:
+            net_cfg = yaml.safe_load(f)
         validate_imitation_cfg(net_cfg, self.s_dim, self.goal_dim, self.action_dim)
 
-        self.prior = PriorNet(obs_dim=self.s_dim, env_cfg=net_cfg)
-        self.posterior = PosteriorNet(
-            obs_dim=self.s_dim, goal_dim=self.goal_dim, env_cfg=net_cfg
-        )
+        self.latent_dim = int(net_cfg["imitation_learning_policy"]["latent_dim"])
 
-        self.latent_dim = int(
-            net_cfg["imitation_learning_policy"]["prior"]["units"][-1]
+        self.prior = PriorNet(
+            obs_dim=self.s_dim, latent_dim=self.latent_dim, env_cfg=net_cfg
+        )
+        self.posterior = PosteriorNet(
+            obs_dim=self.s_dim,
+            goal_dim=self.goal_dim,
+            env_cfg=net_cfg,
+            latent_dim=self.latent_dim,
         )
 
         dec_cfg = net_cfg["imitation_learning_policy"]["action_decoder"]
@@ -86,7 +93,7 @@ class ImitationBlock(nn.Module):
             ),
             codebook_dim=int(
                 net_cfg["imitation_learning_policy"]["rvq_cfg"].get(
-                    "codebook_dim", None
+                    "codebook_dim", self.latent_dim
                 )
             ),
             shared_codebook=bool(
@@ -154,55 +161,57 @@ class ImitationBlock(nn.Module):
 class PriorNet(nn.Module):
     """Prior: z_p = f_theta(s_cur)"""
 
-    def __init__(self, obs_dim: int, env_cfg: dict):
+    def __init__(self, obs_dim: int, latent_dim: int, env_cfg: dict):
         super().__init__()
         cfg = env_cfg["imitation_learning_policy"]["prior"]
         self.units = [int(u) for u in cfg["units"]]
         self.obs_dim = int(obs_dim)
+        self.latent_dim = int(latent_dim)
         self.act_name = str(cfg["activation"])
         self._build_net()
 
     def _build_net(self):
         layers = []
         in_size = self.obs_dim
-        for i in range(len(self.units) - 1):
-            h = self.units[i]
+        for h in self.units:
             layers.append(nn.Linear(in_size, h))
             layers.append(Activation(self.act_name))
             in_size = h
-        layers.append(nn.Linear(in_size, self.units[-1]))
-        self.net = nn.Sequential(*layers)
+        self.trunk = nn.Sequential(*layers)
+        self.loc = nn.Linear(in_size, self.latent_dim)
 
     def forward(self, s_cur: torch.Tensor) -> torch.Tensor:
-        return self.net(s_cur)
+        x = self.trunk(s_cur)
+        return self.loc(x)
 
 
 class PosteriorNet(nn.Module):
     """Posterior: z = f_phi(s_cur, goal)"""
 
-    def __init__(self, obs_dim: int, goal_dim: int, env_cfg: dict):
+    def __init__(self, obs_dim: int, goal_dim: int, latent_dim: int, env_cfg: dict):
         super().__init__()
         cfg = env_cfg["imitation_learning_policy"]["posterior"]
         self.units = [int(u) for u in cfg["units"]]
         self.obs_dim = int(obs_dim)
         self.goal_dim = int(goal_dim)
+        self.latent_dim = int(latent_dim)
         self.act_name = str(cfg["activation"])
         self._build_net()
 
     def _build_net(self):
         layers = []
         in_size = self.obs_dim + self.goal_dim
-        for i in range(len(self.units) - 1):
-            h = self.units[i]
+        for h in self.units:
             layers.append(nn.Linear(in_size, h))
             layers.append(Activation(self.act_name))
             in_size = h
-        layers.append(nn.Linear(in_size, self.units[-1]))
-        self.net = nn.Sequential(*layers)
+        self.trunk = nn.Sequential(*layers)
+        self.loc = nn.Linear(in_size, self.latent_dim)
 
     def forward(self, s_cur: torch.Tensor, goal: torch.Tensor) -> torch.Tensor:
         x = torch.cat([s_cur, goal], dim=-1)
-        return self.net(x)
+        h = self.trunk(x)
+        return self.loc(h)
 
 
 class ActionDecoder(nn.Module):
@@ -215,19 +224,21 @@ class ActionDecoder(nn.Module):
         self.action_dim = int(action_dim)
         self.act_name = str(cfg_dict["activation"])
         self.hidden_units = [int(u) for u in cfg_dict["hidden_units"]]
+        self.activation = Activation(self.act_name)
         self._build_net()
 
     def _build_net(self):
         layers = []
-        in_size = self.obs_dim + self.latent_dim
+        in_size = self.obs_dim
         for h in self.hidden_units:
-            layers.append(nn.Linear(in_size, h))
-            layers.append(Activation(self.act_name))
+            layers.append(nn.Linear(in_size + self.latent_dim, h))
             in_size = h
-        self.net = nn.Sequential(*layers)
+        self.layers = nn.ModuleList(layers)
         self.mu_head = nn.Linear(in_size, self.action_dim)
 
     def forward(self, s_cur: torch.Tensor, z_hat: torch.Tensor) -> torch.Tensor:
-        x = torch.cat([s_cur, z_hat], dim=-1)
-        x = self.net(x)
+        x = s_cur
+        for layer in self.layers:
+            x = layer(torch.cat([x, z_hat], dim=-1))
+            x = self.activation(x)
         return self.mu_head(x)

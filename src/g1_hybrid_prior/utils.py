@@ -29,13 +29,7 @@ def validate_imitation_cfg(
     post_lat = int(post_units[-1])
     assert (
         prior_lat == post_lat
-    ), f"Latent mismatch: prior[-1]={prior_lat} posterior[-1]={post_lat}"
-
-    # optional latent_dim field must match
-    if "latent_dim" in cfg:
-        assert (
-            int(cfg["latent_dim"]) == prior_lat
-        ), f"cfg.latent_dim={cfg['latent_dim']} != prior last={prior_lat}"
+    ), f"Final and first layers mismatch: prior[-1]={prior_lat} posterior[-1]={post_lat}"
 
     dec_cfg = cfg["action_decoder"]
     assert (

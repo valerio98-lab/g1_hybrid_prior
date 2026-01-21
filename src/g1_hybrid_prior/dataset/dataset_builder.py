@@ -1,5 +1,5 @@
 from .dataset import G1HybridPriorDataset
-from .dataset import G1AMPDataset
+from .dataset_amp import G1AMPDataset
 from typing import Tuple
 
 
@@ -16,7 +16,7 @@ def make_dataset(cfg, device):
         return getattr(cfg, key, default)
 
     mode = str(get_cfg_val("training_type", "ppo"))
-    field_check(mode, ("ppo_amp", "ppo"))
+    field_check(mode, ("ppo_amp", "ppo", "imitation_learning"))
 
     dataset_type = str(get_cfg_val("dataset_type", "augmented"))
     field_check(dataset_type, ("augmented", "raw"))
@@ -34,7 +34,7 @@ def make_dataset(cfg, device):
 
     print(f"[DataManager] Initializing dataset type: '{mode}' from {path}")
 
-    if mode == "ppo":
+    if mode in ["ppo", "imitation_learning"]:
         return G1HybridPriorDataset(
             file_path=path,
             robot=robot_name,

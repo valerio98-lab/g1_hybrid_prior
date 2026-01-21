@@ -99,9 +99,6 @@ class G1HybridPriorDataset(Dataset):
             else:
                 self._load_single_npz(self.file_path)
 
-    # ----------------------------
-    # Format detection
-    # ----------------------------
     def _infer_format(self, path: Path, input_format: str) -> str:
         if input_format in ["csv", "npz"]:
             return input_format
@@ -132,9 +129,6 @@ class G1HybridPriorDataset(Dataset):
 
         raise ValueError(f"Unsupported path: {path}")
 
-    # ----------------------------
-    # CSV loading (legacy)
-    # ----------------------------
     def _load_directory_csv(self, directory: Path):
         if self.lazy_load:
             print(
@@ -617,7 +611,6 @@ class G1HybridPriorDataset(Dataset):
 
     def __getitem__(self, idx):
         if self.input_format == "npz":
-            # NPZ always full-loaded in this implementation
             return self.dataset[idx]
 
         # CSV

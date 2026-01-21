@@ -29,6 +29,9 @@ class TrainerCfg:
     save_best: bool = True  # optional
     best_metric: str = "loss_action"  # metric name from eval stats
     best_mode: str = "min"  # "min" or "max"
+    mm_warmup_steps: int = 0  # number of steps to warmup MM loss weight
+    mm_start: float = 0.1  # starting weight for MM loss
+    mm_end: float = 1.0  # final weight for MM loss
 
     device: str = "cuda"
 
@@ -37,8 +40,7 @@ class TrainerCfg:
 class LossWeights:
     action: float = 1.0
     mm: float = 0.1
-    reg: float = 0.0
-    l2: float = 0.0
+    reg: float = 0.05
     vq: float = 1.0  # keep as 1; you can tune later
 
 
@@ -131,7 +133,9 @@ class ImitationTrainer:
 
         self.optim.zero_grad(set_to_none=True)
 
-        with torch.cuda.autocast(enabled=self.scaler.is_enabled()):
+        with torch.amp.autocast(
+            enabled=self.scaler.is_enabled(), device_type=self.device.type
+        ):
             out = self.model(s, goal)
 
             batch_size_zp = out["zp"].shape[0]
@@ -142,6 +146,15 @@ class ImitationTrainer:
                     "y_hat": out["y_hat"].detach().clone(),
                 }
                 self.prev_size = batch_size_zp
+
+            # inside train_step, before compute_imitation_losses
+            if self.cfg.mm_warmup_steps > 0:
+                t = min(1.0, self.global_step / float(self.cfg.mm_warmup_steps))
+                self.loss_weights.mm = (
+                    1.0 - t
+                ) * self.cfg.mm_start + t * self.cfg.mm_end
+            else:
+                self.loss_weights.mm = self.cfg.mm_end
 
             losses_t = self.compute_imitation_losses(
                 out=out,
@@ -171,6 +184,12 @@ class ImitationTrainer:
         stats = self._stats_from_out_and_losses(out, losses_t)
         stats["optim/grad_norm"] = grad_norm
         stats["optim/lr"] = float(self.optim.param_groups[0]["lr"])
+        stats["weights/mm"] = float(self.loss_weights.mm)
+        stats["sched/mm_t"] = (
+            float(min(1.0, self.global_step / float(self.cfg.mm_warmup_steps)))
+            if self.cfg.mm_warmup_steps > 0
+            else 1.0
+        )
 
         # logging
         if self.writer is not None and (self.global_step % self.cfg.log_every == 0):
