@@ -13,7 +13,7 @@ from torch.utils.tensorboard import SummaryWriter
 
 @dataclass
 class TrainerCfg:
-    lr: float = 3e-4
+    lr: float = 2e-4
     betas: tuple[float, float] = (0.9, 0.999)
     weight_decay: float = 0.0
     grad_clip_norm: float = 1.0
@@ -304,7 +304,7 @@ class ImitationTrainer:
         # action reconstruction loss
         loss_action = F.mse_loss(a_hat, a_expert_mu)
         # margin-minimization: push prior to be predictive / reduce residual energy
-        loss_mm = F.mse_loss(z_hat.detach(), zp)
+        loss_mm = F.mse_loss(z_hat, zp)
 
         # regularization loss (temporal consistency): minimize changes between latent embeddings of neighboring frames.
         loss_reg = torch.zeros((), device=a_hat.device, dtype=a_hat.dtype)

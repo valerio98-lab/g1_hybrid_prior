@@ -55,7 +55,7 @@ class ImitationBlock(nn.Module):
 
         dec_cfg = net_cfg["imitation_learning_policy"]["action_decoder"]
         self.use_expert_decoder = net_cfg["imitation_learning_policy"].get(
-            "use_expert_decoder", True
+            "use_expert_decoder", False
         )
 
         if self.use_expert_decoder:
