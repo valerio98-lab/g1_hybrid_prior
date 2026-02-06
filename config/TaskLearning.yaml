@@ -1,0 +1,55 @@
+
+task_learning_policy: 
+  type: MLPPolicy
+  ##Sigma settings
+  init_log_std: -2.9
+  sigma_fixed: True
+  log_std_min: -5.0
+  log_std_max: 1.0
+  latent_dim: 64  
+  num_active_codebooks: 1
+
+  high_level_policy: 
+    units: [1024, 1024, 512]
+    activation: relu
+
+  critic: 
+    units: [1024, 1024, 512]
+    activation: relu
+
+# We need the imitation_learning_policy params to load the pretrained model. It would be worse to manage 
+# two separate yaml files for the TaskLearning Block. 
+imitation_learning_policy: 
+  type: MLPPolicy
+  ##Sigma settings
+  init_log_std: -2.9
+  sigma_fixed: True
+  log_std_min: -5.0
+  log_std_max: 1.0
+  latent_dim: 64
+  use_expert_decoder: False
+  
+  prior: 
+    units: [1024, 1024, 512]
+    activation: relu
+
+  posterior:
+    units: [1024, 1024, 512]
+    activation: relu
+
+  action_decoder:
+    hidden_units: [1024, 1024, 512]
+    activation: relu
+
+  rvq_cfg:
+    num_quantizers: 8
+    codebook_size: 1024
+    quantize_dropout: True
+    decay: 0.99
+    eps : 1e-5
+    commitment_weight: 1.0
+    kmeans_init: False
+    kmeans_iters: 10
+    codebook_dim: 64
+    shared_codebook: False
+
