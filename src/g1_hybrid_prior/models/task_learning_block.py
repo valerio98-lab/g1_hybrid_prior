@@ -50,6 +50,7 @@ class TaskLearningBlock(nn.Module):
         task_goal_dim: int,
         action_dim: int,
         imitation_ckpt_path: str,
+        expert_ckpt_path: str,
     ):
         super().__init__()
         self.s_dim = s_dim
@@ -62,9 +63,20 @@ class TaskLearningBlock(nn.Module):
             cfg = yaml.safe_load(f)
 
         self.num_active_codebooks = cfg["task_learning_policy"]["num_active_codebooks"]
-        expert_decoder = cfg["imitation_learning_policy"].get(
+        use_expert_decoder = cfg.get("imitation_learning_policy", {}).get(
             "use_expert_decoder", False
         )
+
+        if use_expert_decoder:
+            from .expert_policy import ExpertPolicy
+
+            expert = ExpertPolicy(
+                obs_dim=s_dim, goal_dim=goal_dim, action_dim=action_dim
+            )
+            expert.load_from_rlgames(expert_ckpt_path, strict=False, load_rms=False)
+            expert_decoder = expert.decoder
+        else:
+            expert_decoder = None
 
         self.imitation = ImitationBlock(
             s_dim=s_dim,
@@ -72,7 +84,13 @@ class TaskLearningBlock(nn.Module):
             action_dim=action_dim,
             expert_decoder=expert_decoder,
         )
-        self._load_imitation_checkpoint(imitation_ckpt_path)
+
+        full_obs_dim = s_dim + goal_dim
+        self.obs_normalizer = StaticRunningMeanStd(shape=(full_obs_dim,))
+
+        self._load_imitation_checkpoint_and_normalization_stats(
+            imitation_ckpt_path, expert_ckpt_path
+        )
         self._freeze_imitation()
 
         # Extract codebook info
@@ -93,10 +111,12 @@ class TaskLearningBlock(nn.Module):
             num_active_codebooks=num_active_codebooks,
         )
 
-    def _load_imitation_checkpoint(self, ckpt_path: str):
+    def _load_imitation_checkpoint_and_normalization_stats(
+        self, ckpt_path_imi: str, ckpt_path_exp: str
+    ):
         """Load imitation block weights from checkpoint."""
-        print(f"[TaskLearningBlock] Loading imitation checkpoint: {ckpt_path}")
-        ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=False)
+        print(f"[TaskLearningBlock] Loading imitation checkpoint: {ckpt_path_imi}")
+        ckpt = torch.load(ckpt_path_imi, map_location="cpu", weights_only=False)
 
         state_dict = ckpt.get("model", ckpt)
         missing, unexpected = self.imitation.load_state_dict(state_dict, strict=False)
@@ -109,12 +129,38 @@ class TaskLearningBlock(nn.Module):
         if unexpected:
             print(f"Unexpected keys (first 10): {unexpected[:10]}")
 
+        print(f"[TaskLearningBlock] Loading normalization stats from: {ckpt_path_exp}")
+        ckpt = torch.load(ckpt_path_exp, map_location="cpu", weights_only=False)
+        model_state = ckpt.get("model", ckpt)
+        mean_key = next((k for k in model_state if "running_mean" in k), None)
+        var_key = next((k for k in model_state if "running_var" in k), None)
+
+        if mean_key and var_key:
+            print(f"  Found RMS keys: {mean_key}, {var_key}")
+            self.obs_normalizer.mean.copy_(model_state[mean_key])
+            self.obs_normalizer.var.copy_(model_state[var_key])
+        else:
+            print(
+                "[WARNING] Could not find running_mean/var in checkpoint! Zeros/Ones used."
+            )
+
     def _freeze_imitation(self):
         """Freeze all imitation block parameters (prior, posterior, decoder, RVQ)."""
         for param in self.imitation.parameters():
             param.requires_grad = False
         self.imitation.eval()
         print("[TaskLearningBlock] Imitation block frozen.")
+
+    def _normalize_s(self, s_raw):
+        B = s_raw.shape[0]
+        dummy_goal = torch.zeros(
+            (B, self.goal_dim), device=s_raw.device, dtype=s_raw.dtype
+        )
+
+        full_raw = torch.cat([s_raw, dummy_goal], dim=-1)
+        full_norm = self.obs_normalizer(full_raw)
+        s_norm = full_norm[..., : self.s_dim]
+        return s_norm
 
     def _lookup_codebook(self, indices: torch.Tensor) -> torch.Tensor:
         """
@@ -162,11 +208,11 @@ class TaskLearningBlock(nn.Module):
         Returns:
             dict with: action, logits, indices, log_prob, zp, z_bar, y_bar
         """
-
+        s_norm = self._normalize_s(s)
         with torch.no_grad():
-            zp = self.imitation.prior(s)  # (B, latent_dim)
+            zp = self.imitation.prior(s_norm)  # (B, latent_dim)
 
-        hl_out = self.high_level(s, g_task)
+        hl_out = self.high_level(s_norm, g_task)
         logits = hl_out["logits"]  # (B, num_active_codebooks, codebook_size)
 
         if deterministic:
@@ -365,26 +411,50 @@ class TaskCritic(nn.Module):
         return self.critic(x)
 
 
+class StaticRunningMeanStd(nn.Module):
+    """Modulo di normalizzazione con statistiche fisse (caricate da checkpoint)."""
+
+    def __init__(self, shape, epsilon=1e-4, clip=5.0):
+        super().__init__()
+        self.register_buffer("mean", torch.zeros(shape))
+        self.register_buffer("var", torch.ones(shape))
+        self.epsilon = epsilon
+        self.clip = clip
+
+    def forward(self, x):
+        # x: (..., D)
+        scale = torch.rsqrt(self.var + self.epsilon)
+        x_norm = (x - self.mean) * scale
+        return torch.clamp(x_norm, -self.clip, self.clip)
+
+    def load_from_dict(self, state_dict, prefix="running_"):
+        # Helper per caricare da dizionari RL-Games
+        if f"{prefix}mean" in state_dict:
+            self.mean.copy_(state_dict[f"{prefix}mean"])
+        if f"{prefix}var" in state_dict:
+            self.var.copy_(state_dict[f"{prefix}var"])
+
+
 ##DEBUGGING##
-if __name__ == "__main__":
-    s_dim = 69
-    goal_dim = 69
-    task_goal_dim = 5
-    action_dim = 29
-    imitation_ckpt_path = "/home/valerio/g1_hybrid_gym/logs/imitation/22_01_2026_202836/ckpts/g1_hybrid_imitation/ckpt_best.pt"
+# if __name__ == "__main__":
+#     s_dim = 69
+#     goal_dim = 69
+#     task_goal_dim = 5
+#     action_dim = 29
+#     imitation_ckpt_path = "/home/valerio/g1_hybrid_gym/logs/imitation/22_01_2026_202836/ckpts/g1_hybrid_imitation/ckpt_best.pt"
 
-    block = TaskLearningBlock(
-        s_dim=s_dim,
-        goal_dim=goal_dim,
-        task_goal_dim=task_goal_dim,
-        action_dim=action_dim,
-        imitation_ckpt_path=imitation_ckpt_path,
-    )
+#     block = TaskLearningBlock(
+#         s_dim=s_dim,
+#         goal_dim=goal_dim,
+#         task_goal_dim=task_goal_dim,
+#         action_dim=action_dim,
+#         imitation_ckpt_path=imitation_ckpt_path,
+#     )
 
-    batch_size = 4
-    s = torch.randn(batch_size, s_dim)
-    g_task = torch.randn(batch_size, task_goal_dim)
+#     batch_size = 4
+#     s = torch.randn(batch_size, s_dim)
+#     g_task = torch.randn(batch_size, task_goal_dim)
 
-    out = block(s, g_task, deterministic=True)
-    print("Output keys:", out.keys())
-    print("Action shape:", out["action"].shape)
+#     out = block(s, g_task, deterministic=True)
+#     print("Output keys:", out.keys())
+#     print("Action shape:", out["action"].shape)
