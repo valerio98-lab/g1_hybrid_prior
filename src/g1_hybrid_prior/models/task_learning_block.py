@@ -132,17 +132,27 @@ class TaskLearningBlock(nn.Module):
         print(f"[TaskLearningBlock] Loading normalization stats from: {ckpt_path_exp}")
         ckpt = torch.load(ckpt_path_exp, map_location="cpu", weights_only=False)
         model_state = ckpt.get("model", ckpt)
-        mean_key = next((k for k in model_state if "running_mean" in k), None)
-        var_key = next((k for k in model_state if "running_var" in k), None)
+        mean_key = "running_mean_std.running_mean"
+        var_key = "running_mean_std.running_var"
 
-        if mean_key and var_key:
-            print(f"  Found RMS keys: {mean_key}, {var_key}")
-            self.obs_normalizer.mean.copy_(model_state[mean_key])
-            self.obs_normalizer.var.copy_(model_state[var_key])
-        else:
+        if mean_key in model_state and var_key in model_state:
+            mean_val = model_state[mean_key]
+            var_val = model_state[var_key]
+
+            expected_dim = self.s_dim + self.goal_dim  # 138
+            if mean_val.shape[0] != expected_dim:
+                raise RuntimeError(
+                    f"RMS dim mismatch: checkpoint has {mean_val.shape[0]}, "
+                    f"expected {expected_dim} (s_dim={self.s_dim}, goal_dim={self.goal_dim})"
+                )
+
+            self.obs_normalizer.mean.copy_(mean_val)
+            self.obs_normalizer.var.copy_(var_val)
             print(
-                "[WARNING] Could not find running_mean/var in checkpoint! Zeros/Ones used."
+                f"  Loaded obs RMS: mean.mean={mean_val.mean():.4f}, var.mean={var_val.mean():.4f}"
             )
+        else:
+            print("[WARNING] Could not find running_mean_std in checkpoint!")
 
     def _freeze_imitation(self):
         """Freeze all imitation block parameters (prior, posterior, decoder, RVQ)."""
