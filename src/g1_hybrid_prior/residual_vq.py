@@ -14,20 +14,18 @@ class RVQCfg:
     dim: int
     num_quantizers: int = 8
     codebook_size: int = 1024
-    codebook_dim: Optional[int] = None  # if None, = dim
+    codebook_dim: Optional[int] = None
     shared_codebook: bool = False
 
-    # quantizer dropout (paper / encodec-style)
     quantize_dropout: bool = True
 
     # VectorQuantize kwargs
     decay: float = 0.99
     eps: float = 1e-5
-    commitment_weight: float = (
-        1.0  # note: VectorQuantize may already include this internally
-    )
+    commitment_weight: float = 1.0
     kmeans_init: bool = False
     kmeans_iters: int = 10
+    rotation_trick: bool = True
 
 
 class ResidualVQ(nn.Module):
@@ -52,7 +50,7 @@ class ResidualVQ(nn.Module):
         self.codebook_dim = codebook_dim
         self.num_quantizers = int(cfg.num_quantizers)
 
-        # optional projection if codebook_dim != dim (rarely needed for your use)
+        # optional projection if codebook_dim != dim
         self.project_in = (
             nn.Linear(dim, codebook_dim) if codebook_dim != dim else nn.Identity()
         )
@@ -77,6 +75,7 @@ class ResidualVQ(nn.Module):
                 commitment_weight=float(cfg.commitment_weight),
                 kmeans_init=bool(cfg.kmeans_init),
                 kmeans_iters=int(cfg.kmeans_iters),
+                rotation_trick=bool(cfg.rotation_trick),
             )
             layers.append(vq)
 

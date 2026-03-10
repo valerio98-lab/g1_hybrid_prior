@@ -33,3 +33,4 @@ imitation_learning_policy:
     kmeans_iters: 10
     codebook_dim: 64
     shared_codebook: False
+    rotation_trick: False

@@ -120,7 +120,6 @@ class ExpertPolicy(nn.Module):
         ckpt = torch.load(ckpt_path, map_location=self.device, weights_only=False)
         sd = ckpt.get("model", ckpt) if isinstance(ckpt, dict) else ckpt
 
-        # 1) load policy weights
         sd_model = {k: v for k, v in sd.items() if k.startswith("a2c_network.")}
         sd_model = OrderedDict(
             (k.replace("a2c_network.", "", 1), v) for k, v in sd_model.items()
@@ -130,7 +129,6 @@ class ExpertPolicy(nn.Module):
             f"[INFO] Expert weights loaded. missing={len(missing)} unexpected={len(unexpected)}"
         )
 
-        # 2) load running_mean_std
         has_rms = (
             "running_mean_std.running_mean" in sd
             and "running_mean_std.running_var" in sd

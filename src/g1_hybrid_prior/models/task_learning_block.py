@@ -3,19 +3,19 @@
 Task-Learning Block (Paper Section 4.3.2).
 
 Architecture:
-  - Frozen: prior network, RVQ codebooks, low-level decoder
-  - Trainable: high-level policy (categorical over codebook indices)
+    - Frozen: prior network, RVQ codebooks, low-level decoder
+    - Trainable: high-level policy (categorical over codebook indices)
 
 Forward flow:
-  1. zp = prior(s)                          [frozen]
-  2. indices = high_level(s, g_task)         [trainable, categorical]
-  3. y_bar = sum of selected codebook entries[frozen codebooks]
-  4. z_bar = y_bar + zp
-  5. action = decoder(s, z_bar)             [frozen]
+    1. zp = prior(s)                          [frozen]
+    2. indices = high_level(s, g_task)         [trainable, categorical]
+    3. y_bar = sum of selected codebook entries[frozen codebooks]
+    4. z_bar = y_bar + zp
+    5. action = decoder(s, z_bar)             [frozen]
 """
 from __future__ import annotations
 
-from typing import Dict, Optional, Tuple
+from typing import Dict, Optional
 
 import torch
 import torch.nn as nn
@@ -23,24 +23,15 @@ import torch.nn as nn
 import yaml
 
 from ..helpers import get_project_root
-from ..residual_vq import ResidualVQ
 from ..utils import Activation
-from .hybrid_imitation_block import ImitationBlock, PriorNet, ActionDecoder
+from .hybrid_imitation_block import ImitationBlock
 
 
 class TaskLearningBlock(nn.Module):
     """
-    Complete task-learning module.
-
-    Loads a trained ImitationBlock checkpoint, freezes everything,
-    and exposes a trainable HighLevelPolicy that selects codebook indices.
-
-    The forward pass implements Figure 3 (right):
-      s → Prior [frozen] → zp
-      (s, g_task) → HighLevel [trainable] → categorical → indices
-      indices → Codebook lookup [frozen] → y_bar
-      z_bar = y_bar + zp
-      (s, z_bar) → Decoder [frozen] → action
+    Loads a frozen imitation learning model and adds a trainable high-level policy on top.
+    The high-level policy picks codebook indices based on state and task goal.
+    The frozen decoder then generates actions from these indices.
     """
 
     def __init__(
@@ -58,15 +49,21 @@ class TaskLearningBlock(nn.Module):
         self.task_goal_dim = task_goal_dim
         self.action_dim = action_dim
 
+        # Load config to get number of active codebooks
         cfg_path = get_project_root() / "config/TaskLearning.yaml"
         with open(cfg_path, "r") as f:
             cfg = yaml.safe_load(f)
 
         self.num_active_codebooks = cfg["task_learning_policy"]["num_active_codebooks"]
+        print(
+            f"[TaskLearningBlock] num_active_codebooks={self.num_active_codebooks}",
+            flush=True,
+        )
         use_expert_decoder = cfg.get("imitation_learning_policy", {}).get(
             "use_expert_decoder", False
         )
 
+        # Optionally load expert decoder
         if use_expert_decoder:
             from .expert_policy import ExpertPolicy
 
@@ -78,6 +75,7 @@ class TaskLearningBlock(nn.Module):
         else:
             expert_decoder = None
 
+        # Create the imitation block (prior, decoder, codebooks)
         self.imitation = ImitationBlock(
             s_dim=s_dim,
             goal_dim=goal_dim,
@@ -85,15 +83,17 @@ class TaskLearningBlock(nn.Module):
             expert_decoder=expert_decoder,
         )
 
+        # Running mean/std for normalizing observations
         full_obs_dim = s_dim + goal_dim
         self.obs_normalizer = StaticRunningMeanStd(shape=(full_obs_dim,))
 
+        # Load checkpoint and freeze everything
         self._load_imitation_checkpoint_and_normalization_stats(
             imitation_ckpt_path, expert_ckpt_path
         )
         self._freeze_imitation()
 
-        # Extract codebook info
+        # Get codebook dimensions from loaded imitation block
         self.latent_dim = self.imitation.latent_dim
         self.codebook_size = self.imitation.rvq.cfg.codebook_size
         self.total_codebooks = self.imitation.rvq.num_quantizers
@@ -104,6 +104,7 @@ class TaskLearningBlock(nn.Module):
             num_active_codebooks <= self.total_codebooks
         ), f"num_active_codebooks={num_active_codebooks} > total={self.total_codebooks}"
 
+        # Create trainable high-level policy
         self.high_level = HighLevelPolicy(
             s_dim=s_dim,
             goal_dim=task_goal_dim,
@@ -114,7 +115,7 @@ class TaskLearningBlock(nn.Module):
     def _load_imitation_checkpoint_and_normalization_stats(
         self, ckpt_path_imi: str, ckpt_path_exp: str
     ):
-        """Load imitation block weights from checkpoint."""
+        """Load weights for the imitation block from checkpoint."""
         print(f"[TaskLearningBlock] Loading imitation checkpoint: {ckpt_path_imi}")
         ckpt = torch.load(ckpt_path_imi, map_location="cpu", weights_only=False)
 
@@ -129,6 +130,7 @@ class TaskLearningBlock(nn.Module):
         if unexpected:
             print(f"Unexpected keys (first 10): {unexpected[:10]}")
 
+        # Load normalization statistics from expert checkpoint
         print(f"[TaskLearningBlock] Loading normalization stats from: {ckpt_path_exp}")
         ckpt = torch.load(ckpt_path_exp, map_location="cpu", weights_only=False)
         model_state = ckpt.get("model", ckpt)
@@ -139,7 +141,7 @@ class TaskLearningBlock(nn.Module):
             mean_val = model_state[mean_key]
             var_val = model_state[var_key]
 
-            expected_dim = self.s_dim + self.goal_dim  # 138
+            expected_dim = self.s_dim + self.goal_dim
             if mean_val.shape[0] != expected_dim:
                 raise RuntimeError(
                     f"RMS dim mismatch: checkpoint has {mean_val.shape[0]}, "
@@ -155,14 +157,16 @@ class TaskLearningBlock(nn.Module):
             print("[WARNING] Could not find running_mean_std in checkpoint!")
 
     def _freeze_imitation(self):
-        """Freeze all imitation block parameters (prior, posterior, decoder, RVQ)."""
+        """Stop gradients for all imitation block parameters."""
         for param in self.imitation.parameters():
             param.requires_grad = False
         self.imitation.eval()
         print("[TaskLearningBlock] Imitation block frozen.")
 
     def _normalize_s(self, s_raw):
+        """Normalize state using loaded mean/std statistics."""
         B = s_raw.shape[0]
+        # Create dummy goal to match expected input shape
         dummy_goal = torch.zeros(
             (B, self.goal_dim), device=s_raw.device, dtype=s_raw.dtype
         )
@@ -174,19 +178,19 @@ class TaskLearningBlock(nn.Module):
 
     def _lookup_codebook(self, indices: torch.Tensor) -> torch.Tensor:
         """
-        Look up codebook entries and sum them (RVQ reconstruction).
+        Get codebook vectors for given indices and sum them up.
 
         Args:
-            indices: (B, num_active_codebooks) — integer indices
+                indices: (B, num_active_codebooks) — which codebook entry to use
 
         Returns:
-            y_bar: (B, latent_dim) — sum of selected code vectors
+                y_bar: (B, latent_dim) — summed codebook vectors
         """
         B = indices.shape[0]
         y_bar = torch.zeros(B, self.latent_dim, device=indices.device)
 
+        # For each codebook, look up the vector and add it
         for q in range(self.num_active_codebooks):
-            # Access the q-th codebook's embedding
             vq_layer = self.imitation.rvq.layers[q]
             codebook = vq_layer._codebook.embed  # (1, K, D) or (K, D)
             if codebook.dim() == 3:
@@ -208,44 +212,50 @@ class TaskLearningBlock(nn.Module):
         self, s: torch.Tensor, g_task: torch.Tensor, deterministic: bool = False
     ) -> Dict[str, torch.Tensor]:
         """
-        Full forward pass for task learning.
+        Run the full task learning forward pass.
 
         Args:
-            s: (B, s_dim) — proprioceptive state
-            g_task: (B, task_goal_dim) — task-specific goal (e.g., velocity command)
-            deterministic: if True, use argmax instead of sampling
+                s: (B, s_dim) — robot state
+                g_task: (B, task_goal_dim) — task goal (e.g., velocity target)
+                deterministic: if True, pick best indices instead of sampling
 
         Returns:
-            dict with: action, logits, indices, log_prob, zp, z_bar, y_bar
+                dict with action, logits, indices, log_prob, entropy, etc.
         """
+        # Normalize state
         s_norm = self._normalize_s(s)
-        with torch.no_grad():
-            zp = self.imitation.prior(s_norm)  # (B, latent_dim)
 
+        # Get prior latent (frozen)
+        with torch.no_grad():
+            zp = self.imitation.prior(s_norm)
+
+        # High-level policy outputs logits over codebook indices
         hl_out = self.high_level(s_norm, g_task)
         logits = hl_out["logits"]  # (B, num_active_codebooks, codebook_size)
 
+        # Either pick best or sample indices
         if deterministic:
-            indices = logits.argmax(dim=-1)  # (B, num_active_codebooks)
-            # Still compute log_prob for debugging/analysis, even though it won't be used
+            indices = logits.argmax(dim=-1)
             dist = torch.distributions.Categorical(logits=logits)
-            log_prob = dist.log_prob(indices)  # (B, num_active_codebooks)
+            log_prob = dist.log_prob(indices)
         else:
             dist = torch.distributions.Categorical(logits=logits)
-            indices = dist.sample()  # (B, num_active_codebooks)
-            log_prob = dist.log_prob(indices)  # (B, num_active_codebooks)
+            indices = dist.sample()
+            log_prob = dist.log_prob(indices)
 
-        # Sum log_probs across codebooks for total action log_prob
+        # Total log probability and entropy across all codebooks
         log_prob_total = log_prob.sum(dim=-1)  # (B,)
         entropy = dist.entropy().sum(dim=-1)  # (B,)
 
+        # Look up codebook vectors and combine with prior
         with torch.no_grad():
-            y_bar = self._lookup_codebook(indices)  # (B, latent_dim)
+            y_bar = self._lookup_codebook(indices)
 
-        z_bar = y_bar + zp  # zp already detached since prior is frozen
+        z_bar = y_bar + zp
 
+        # Decode action (frozen)
         with torch.no_grad():
-            action = self.imitation.decoder(s, z_bar)  # (B, action_dim)
+            action = self.imitation.decoder(s, z_bar)
 
         return {
             "action": action,
@@ -266,8 +276,8 @@ class TaskLearningBlock(nn.Module):
         deterministic: bool = False,
     ) -> Dict[str, torch.Tensor]:
         """
-        Convenience method for PPO: returns action + value + log_prob + entropy.
-        value_net is an external critic (not part of this block).
+        Get action, log_prob, entropy, and optionally value estimate.
+        Used during PPO rollout.
         """
         out = self.forward(s, g_task, deterministic=deterministic)
 
@@ -284,28 +294,31 @@ class TaskLearningBlock(nn.Module):
         old_indices: torch.Tensor,
     ) -> Dict[str, torch.Tensor]:
         """
-        For PPO training phase: recompute log_prob and entropy for old actions.
+        Re-evaluate old actions for PPO updates.
+        Computes log_prob and entropy for actions taken during rollout.
 
         Args:
-            s: (B, s_dim)
-            g_task: (B, task_goal_dim)
-            old_indices: (B, num_active_codebooks) — indices from rollout
+                s: (B, s_dim) — state
+                g_task: (B, task_goal_dim) — task goal
+                old_indices: (B, num_active_codebooks) — actions from rollout
 
         Returns:
-            log_prob, entropy, and the reconstructed action
+                log_prob, entropy, reconstructed action
         """
-
         with torch.no_grad():
             zp = self.imitation.prior(s)
 
+        # Get current policy logits
         hl_out = self.high_level(s, g_task)
-        logits = hl_out["logits"]  # (B, num_active_codebooks, codebook_size)
+        logits = hl_out["logits"]
 
+        # Compute log_prob and entropy for old actions
         dist = torch.distributions.Categorical(logits=logits)
-        log_prob = dist.log_prob(old_indices)  # (B, num_active_codebooks)
-        log_prob_total = log_prob.sum(dim=-1)  # (B,)
-        entropy = dist.entropy().sum(dim=-1)  # (B,)
+        log_prob = dist.log_prob(old_indices)
+        log_prob_total = log_prob.sum(dim=-1)
+        entropy = dist.entropy().sum(dim=-1)
 
+        # Reconstruct action for reference
         with torch.no_grad():
             y_bar = self._lookup_codebook(old_indices)
             z_bar = y_bar + zp
@@ -321,13 +334,8 @@ class TaskLearningBlock(nn.Module):
 
 class HighLevelPolicy(nn.Module):
     """
-    High-level policy: π_high(s, g) -> categorical distribution over codebook indices.
-
-    For each active codebook, outputs a categorical distribution over codebook_size entries.
-    During training (PPO), we sample from the categorical; during inference we can take argmax.
-
-    Architecture:
-      MLP trunk -> one linear head per active codebook -> Categorical per codebook
+    Outputs a categorical distribution over codebook indices for each active codebook.
+    Takes state and task goal as input.
     """
 
     def __init__(
@@ -343,6 +351,7 @@ class HighLevelPolicy(nn.Module):
         self.codebook_size = codebook_size
         self.num_active_codebooks = num_active_codebooks
 
+        # Load network architecture from config
         cfg_path = get_project_root() / "config/TaskLearning.yaml"
         with open(cfg_path, "r") as f:
             cfg = yaml.safe_load(f)
@@ -350,6 +359,7 @@ class HighLevelPolicy(nn.Module):
         activation = cfg["task_learning_policy"]["high_level_policy"]["activation"]
         self.activation_fn = Activation(activation)
 
+        # Build MLP trunk
         layers = []
         in_size = s_dim + goal_dim
         for h in hidden_units:
@@ -358,37 +368,32 @@ class HighLevelPolicy(nn.Module):
             in_size = h
         self.trunk = nn.Sequential(*layers)
 
-        # One classification head per active codebook
+        # One output head per codebook
         self.heads = nn.ModuleList(
             [nn.Linear(in_size, codebook_size) for _ in range(num_active_codebooks)]
         )
 
     def forward(self, s: torch.Tensor, g: torch.Tensor) -> Dict[str, torch.Tensor]:
         """
+        Compute logits for each codebook.
+
         Returns:
-            logits: (B, num_active_codebooks, codebook_size)
+                logits: (B, num_active_codebooks, codebook_size)
         """
         x = torch.cat([s, g], dim=-1)
         h = self.trunk(x)
 
-        logits_list = [head(h) for head in self.heads]  # list of (B, codebook_size)
-        logits = torch.stack(
-            logits_list, dim=1
-        )  # (B, num_active_codebooks, codebook_size)
+        # Get logits from each head and stack them
+        logits_list = [head(h) for head in self.heads]
+        logits = torch.stack(logits_list, dim=1)
 
         return {"logits": logits}
 
 
-"""
-Value network (critic) for task learning PPO.
-The Value network is used as far as we are training the high-level policy with PPO. 
-After training, it can be discarded since we only care about the learned high-level policy and the frozen low-level decoder. 
-"""
-
-
 class TaskCritic(nn.Module):
     """
-    V(s, g_task) -> scalar value estimate.
+    Value network for PPO training.
+    Estimates V(s, g_task) — how good the current state is for achieving the task goal.
     """
 
     def __init__(
@@ -397,15 +402,16 @@ class TaskCritic(nn.Module):
         goal_dim: int,
     ):
         super().__init__()
+        # Load architecture from config
         cfg_path = get_project_root() / "config/TaskLearning.yaml"
         with open(cfg_path, "r") as f:
             cfg = yaml.safe_load(f)
 
         hidden_units = cfg["task_learning_policy"]["critic"]["units"]
-
         activation = cfg["task_learning_policy"]["critic"].get("activation", "relu")
         self.activation_fn = Activation(activation)
 
+        # Build MLP
         layers = []
         in_size = s_dim + goal_dim
         for h in hidden_units:
@@ -417,12 +423,16 @@ class TaskCritic(nn.Module):
         self.critic = nn.Sequential(*layers)
 
     def forward(self, s: torch.Tensor, g: torch.Tensor) -> torch.Tensor:
+        """Return scalar value estimate for (state, goal) pair."""
         x = torch.cat([s, g], dim=-1)
         return self.critic(x)
 
 
 class StaticRunningMeanStd(nn.Module):
-    """Modulo di normalizzazione con statistiche fisse (caricate da checkpoint)."""
+    """
+    Normalizes inputs using fixed mean and variance (loaded from checkpoint).
+    Does not update statistics during training.
+    """
 
     def __init__(self, shape, epsilon=1e-4, clip=5.0):
         super().__init__()
@@ -432,39 +442,14 @@ class StaticRunningMeanStd(nn.Module):
         self.clip = clip
 
     def forward(self, x):
-        # x: (..., D)
+        """Normalize and clip input."""
         scale = torch.rsqrt(self.var + self.epsilon)
         x_norm = (x - self.mean) * scale
         return torch.clamp(x_norm, -self.clip, self.clip)
 
     def load_from_dict(self, state_dict, prefix="running_"):
-        # Helper per caricare da dizionari RL-Games
+        """Load mean and variance from a state dict."""
         if f"{prefix}mean" in state_dict:
             self.mean.copy_(state_dict[f"{prefix}mean"])
         if f"{prefix}var" in state_dict:
             self.var.copy_(state_dict[f"{prefix}var"])
-
-
-##DEBUGGING##
-# if __name__ == "__main__":
-#     s_dim = 69
-#     goal_dim = 69
-#     task_goal_dim = 5
-#     action_dim = 29
-#     imitation_ckpt_path = "/home/valerio/g1_hybrid_gym/logs/imitation/22_01_2026_202836/ckpts/g1_hybrid_imitation/ckpt_best.pt"
-
-#     block = TaskLearningBlock(
-#         s_dim=s_dim,
-#         goal_dim=goal_dim,
-#         task_goal_dim=task_goal_dim,
-#         action_dim=action_dim,
-#         imitation_ckpt_path=imitation_ckpt_path,
-#     )
-
-#     batch_size = 4
-#     s = torch.randn(batch_size, s_dim)
-#     g_task = torch.randn(batch_size, task_goal_dim)
-
-#     out = block(s, g_task, deterministic=True)
-#     print("Output keys:", out.keys())
-#     print("Action shape:", out["action"].shape)

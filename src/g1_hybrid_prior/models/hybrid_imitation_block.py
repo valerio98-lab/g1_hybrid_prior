@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from typing import Dict
+from typing import Dict, Mapping, Any
+from dataclasses import asdict
+import inspect
 
 import torch
 import torch.nn as nn
@@ -13,15 +15,42 @@ from ..residual_vq import ResidualVQ, RVQCfg
 from .expert_policy import Decoder
 
 
+def _check_string(fields: Mapping[str, Any]):
+    string = ""
+    for k, v in fields.items():
+        string += f"{k}: {v} \n"
+    return string
+
+
 class ImitationBlock(nn.Module):
     """
-    Forward-only block (losses computed elsewhere in compute_losses.py):
-      zp = prior(s)
-      z  = posterior(s, goal)
-      y  = z - sg(zp)
-      y_hat = y (or RVQ(y))
-      z_hat = sg(zp) + y_hat
-      a_hat = decoder(s, z_hat)
+    A neural network module for imitation learning that learns to map observations and goals to actions.
+
+    The module uses a hybrid architecture with:
+    - A prior network that predicts latent codes from observations alone
+    - A posterior network that predicts latent codes from observations and goals
+    - A residual vector quantizer (RVQ) that discretizes the difference between posterior and prior
+    - An action decoder that generates actions from observations and latent codes
+
+    Args:
+        s_dim: Dimension of the observation/state space
+        goal_dim: Dimension of the goal space
+        action_dim: Dimension of the action space
+        expert_decoder: Optional pre-trained decoder to use instead of learning a new one. Disabled by default.
+
+    Methods:
+        get_action(s_cur): Predicts actions using only the prior network (no goal needed)
+        forward(s_cur, goal): Full forward pass that computes posterior, quantizes residuals, and predicts actions
+
+    Forward pass:
+        1. Compute prior latent: zp = prior(s)
+        2. Compute posterior latent: z = posterior(s, goal)
+        3. Compute residual: y = z - zp (with zp detached)
+        4. Quantize residual: y_hat = RVQ(y)
+        5. Reconstruct latent: z_hat = zp + y_hat
+        6. Decode action: a_hat = decoder(s, z_hat)
+
+    Returns a dict with all intermediate values for training.
     """
 
     def __init__(
@@ -118,7 +147,15 @@ class ImitationBlock(nn.Module):
             kmeans_iters=int(
                 net_cfg["imitation_learning_policy"]["rvq_cfg"].get("kmeans_iters", 10)
             ),
+            rotation_trick=bool(
+                net_cfg["imitation_learning_policy"]["rvq_cfg"].get(
+                    "rotation_trick", True
+                )
+            ),
         )
+        rvq_cfg_check = asdict(rvq_cfg)
+        string = _check_string(rvq_cfg_check)
+        print(f"[RVQ CONF]: {string}")
         self.rvq = ResidualVQ(rvq_cfg)
 
     @torch.no_grad()

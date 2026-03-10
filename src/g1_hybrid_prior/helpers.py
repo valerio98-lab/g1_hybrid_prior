@@ -122,3 +122,12 @@ def quat_log_vec(q_wxyz: torch.Tensor, eps: float = 1e-8) -> torch.Tensor:
     theta = torch.atan2(v_norm, w)
     axis = v / v_norm
     return 2.0 * theta * axis
+
+
+def get_angle_from_quat(q_wxyz: torch.Tensor) -> torch.Tensor:
+    w, x, y, z = q_wxyz.unbind(-1)
+    roll = torch.atan2(2 * (w * x + y * z), 1.0 - 2.0 * (x * x + y * y))
+    pitch = torch.asin(torch.clamp(2.0 * (w * y - z * x), -1.0, 1.0))
+    yaw = torch.atan2(2.0 * (w * z + x * y), 1.0 - 2.0 * (y * y + z * z))
+
+    return roll, pitch, yaw
