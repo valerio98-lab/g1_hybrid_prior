@@ -16,7 +16,7 @@ def make_dataset(cfg, device):
         return getattr(cfg, key, default)
 
     mode = str(get_cfg_val("training_type", "ppo"))
-    field_check(mode, ("ppo_amp", "ppo", "imitation_learning"))
+    field_check(mode, ("ppo_amp", "ppo", "learning"))
 
     dataset_type = str(get_cfg_val("dataset_type", "augmented"))
     field_check(dataset_type, ("augmented", "raw"))
@@ -34,7 +34,7 @@ def make_dataset(cfg, device):
 
     print(f"[DataManager] Initializing dataset type: '{mode}' from {path}")
 
-    if mode in ["ppo", "imitation_learning"]:
+    if mode in ["ppo", "learning"]:
         return G1HybridPriorDataset(
             file_path=path,
             robot=robot_name,
@@ -44,7 +44,7 @@ def make_dataset(cfg, device):
         )
 
     elif mode == "ppo_amp":
-        # Il dataset veloce per AMP (Discriminator training)
+        # Il dataset per AMP (Discriminator training)
         num_amp_obs_steps = int(get_cfg_val("num_amp_obs_steps"))
         return G1AMPDataset(
             file_path=path,

@@ -24,8 +24,8 @@ class G1HybridPriorDataset(Dataset):
         lazy_load: bool = False,
         lazy_load_window: int = 1000,
         vel_mode="central",
-        dataset_type: str = "raw",  # "raw" | "augmented" (CSV legacy). In NPZ, EE/body are read if present.
-        input_format: str = "auto",  # "auto" | "csv" | "npz"
+        dataset_type: str = "raw",
+        input_format: str = "auto",
     ):
         super().__init__()
 
@@ -103,7 +103,6 @@ class G1HybridPriorDataset(Dataset):
         if input_format in ["csv", "npz"]:
             return input_format
 
-        # auto
         if path.is_file():
             if path.suffix == ".npz":
                 return "npz"
@@ -112,7 +111,6 @@ class G1HybridPriorDataset(Dataset):
             raise ValueError(f"Invalid file type: {path.suffix}. Must be .csv or .npz")
 
         if path.is_dir():
-            # decide based on what it contains
             npz_files = list(path.glob("*.npz"))
             csv_files = list(path.glob("*.csv"))
             if len(npz_files) > 0 and len(csv_files) == 0:
@@ -120,7 +118,6 @@ class G1HybridPriorDataset(Dataset):
             if len(csv_files) > 0 and len(npz_files) == 0:
                 return "csv"
             if len(npz_files) > 0 and len(csv_files) > 0:
-                # ambiguous: default NPZ because it's "new flow"
                 print(
                     "[Dataset] WARNING: directory contains both .csv and .npz. Defaulting to NPZ."
                 )
@@ -233,7 +230,6 @@ class G1HybridPriorDataset(Dataset):
         root = row[:root_end]
         joints = row[root_end:joints_end]
 
-        # CSV root format: [x y z qx qy qz qw]
         qx, qy, qz, qw = root[3:7]
         root_pos = torch.tensor(root[0:3], dtype=torch.float32)
         root_quat_wxyz = torch.tensor([qw, qx, qy, qz], dtype=torch.float32)
@@ -273,15 +269,6 @@ class G1HybridPriorDataset(Dataset):
         self.num_frames = len(self.dataset)
 
     def _load_file_npz(self, path: Path):
-        """
-        Expected NPZ keys (your new flow):
-          - root: (T,7) [x y z qx qy qz qw]
-          - q_joints_yaml: (T,dof) joints in robots.yaml order
-          - body_pos: (T,K,3) optional
-          - body_names: (K,) optional
-          - ee_pos: (T,E,3) optional
-          - ee_names: (E,) optional
-        """
         try:
             npz = np.load(path, allow_pickle=True)
         except Exception as e:
@@ -290,47 +277,39 @@ class G1HybridPriorDataset(Dataset):
 
         if "root" not in npz or "q_joints_yaml" not in npz:
             raise ValueError(
-                f"NPZ {path.name} missing required keys. Need at least 'root' and 'q_joints_yaml'. "
-                f"Found: {list(npz.keys())}"
+                f"NPZ {path.name} missing required keys. Found: {list(npz.keys())}"
             )
 
-        root = npz["root"]  # (T,7) float32
-        joints = npz["q_joints_yaml"]  # (T,dof) float32
-
-        if root.ndim != 2 or root.shape[1] != 7:
-            raise ValueError(f"NPZ {path.name}: 'root' must be (T,7). Got {root.shape}")
-        if joints.ndim != 2 or joints.shape[1] != self.robot_cfg.dof:
-            raise ValueError(
-                f"NPZ {path.name}: 'q_joints_yaml' must be (T,{self.robot_cfg.dof}). Got {joints.shape}"
-            )
+        root = npz["root"]
+        joints = npz["q_joints_yaml"]
 
         body_pos = npz["body_pos"] if "body_pos" in npz else None
+        body_quat = npz["body_quat"] if "body_quat" in npz else None
         body_names = npz["body_names"] if "body_names" in npz else None
 
         ee_pos = npz["ee_pos"] if "ee_pos" in npz else None
         ee_names = npz["ee_names"] if "ee_names" in npz else None
 
         if body_names is not None:
-            bn = [str(x) for x in body_names.tolist()]  # robust
+            bn = [str(x) for x in body_names.tolist()]
             if self._body_names is None:
                 self._body_names = bn
-            else:
-                if self._body_names != bn:
-                    raise ValueError(f"Inconsistent body_names in {path.name}")
+            elif self._body_names != bn:
+                raise ValueError(f"Inconsistent body_names in {path.name}")
 
         if ee_names is not None:
             en = [str(x) for x in ee_names.tolist()]
             if self._ee_names is None:
                 self._ee_names = en
-            else:
-                if self._ee_names != en:
-                    raise ValueError(f"Inconsistent ee_names in {path.name}")
+            elif self._ee_names != en:
+                raise ValueError(f"Inconsistent ee_names in {path.name}")
 
         return self.__frame_building_from_npz_arrays__(
             root=root,
             joints=joints,
             ee_pos=ee_pos,
             body_pos=body_pos,
+            body_quat=body_quat,
         )
 
     def get_body_names(self):
@@ -363,21 +342,100 @@ class G1HybridPriorDataset(Dataset):
         joints: np.ndarray,
         ee_pos: np.ndarray | None,
         body_pos: np.ndarray | None,
+        body_quat: np.ndarray | None,
     ):
         dt = 1.0 / self.robot_cfg.fps
         T = root.shape[0]
 
         frames_list = []
         for t in range(T):
-            # root: [x y z qx qy qz qw]
             x, y, z, qx, qy, qz, qw = root[t].tolist()
             root_pos = torch.tensor([x, y, z], dtype=torch.float32)
-            root_quat_wxyz = torch.tensor([qw, qx, qy, qz], dtype=torch.float32)
-            root_quat_wxyz = quat_normalize(root_quat_wxyz)
+            root_quat_wxyz = quat_normalize(
+                torch.tensor([qw, qx, qy, qz], dtype=torch.float32)
+            )
 
             joints_t = torch.tensor(joints[t], dtype=torch.float32)
 
-            # Build prev/next for velocities
+            if body_pos is not None and body_quat is not None:
+                b_pos_t = torch.tensor(body_pos[t], dtype=torch.float32)
+                bq = torch.tensor(body_quat[t], dtype=torch.float32)
+
+                b_quat_t = quat_normalize(
+                    torch.stack(
+                        [bq[..., 3], bq[..., 0], bq[..., 1], bq[..., 2]], dim=-1
+                    )
+                )
+
+                if T == 1:
+                    prev_b_p, nxt_b_p = b_pos_t, b_pos_t
+                    prev_b_q, nxt_b_q = b_quat_t, b_quat_t
+                else:
+                    if t == 0:
+                        prev_b_p, prev_b_q = b_pos_t, b_quat_t
+                        nxt_b_p = torch.tensor(body_pos[t + 1], dtype=torch.float32)
+                        nxt_b_q = torch.tensor(body_quat[t + 1], dtype=torch.float32)
+                        nxt_b_q = quat_normalize(
+                            torch.stack(
+                                [
+                                    nxt_b_q[..., 3],
+                                    nxt_b_q[..., 0],
+                                    nxt_b_q[..., 1],
+                                    nxt_b_q[..., 2],
+                                ],
+                                dim=-1,
+                            )
+                        )
+                    elif t == T - 1:
+                        prev_b_p = torch.tensor(body_pos[t - 1], dtype=torch.float32)
+                        prev_b_q = torch.tensor(body_quat[t - 1], dtype=torch.float32)
+                        prev_b_q = quat_normalize(
+                            torch.stack(
+                                [
+                                    prev_b_q[..., 3],
+                                    prev_b_q[..., 0],
+                                    prev_b_q[..., 1],
+                                    prev_b_q[..., 2],
+                                ],
+                                dim=-1,
+                            )
+                        )
+                        nxt_b_p, nxt_b_q = b_pos_t, b_quat_t
+                    else:
+                        prev_b_p = torch.tensor(body_pos[t - 1], dtype=torch.float32)
+                        prev_b_q = torch.tensor(body_quat[t - 1], dtype=torch.float32)
+                        prev_b_q = quat_normalize(
+                            torch.stack(
+                                [
+                                    prev_b_q[..., 3],
+                                    prev_b_q[..., 0],
+                                    prev_b_q[..., 1],
+                                    prev_b_q[..., 2],
+                                ],
+                                dim=-1,
+                            )
+                        )
+
+                        nxt_b_p = torch.tensor(body_pos[t + 1], dtype=torch.float32)
+                        nxt_b_q = torch.tensor(body_quat[t + 1], dtype=torch.float32)
+                        nxt_b_q = quat_normalize(
+                            torch.stack(
+                                [
+                                    nxt_b_q[..., 3],
+                                    nxt_b_q[..., 0],
+                                    nxt_b_q[..., 1],
+                                    nxt_b_q[..., 2],
+                                ],
+                                dim=-1,
+                            )
+                        )
+
+                body_lin_vel, body_ang_vel = self.__compute_body_velocities__(
+                    prev_b_p, b_pos_t, nxt_b_p, prev_b_q, b_quat_t, nxt_b_q, dt, t, T
+                )
+            else:
+                b_pos_t, b_quat_t, body_lin_vel, body_ang_vel = None, None, None, None
+
             if T == 1:
                 prev_pos, prev_quat, prev_j = root_pos, root_quat_wxyz, joints_t
                 next_pos, next_quat, next_j = root_pos, root_quat_wxyz, joints_t
@@ -397,7 +455,6 @@ class G1HybridPriorDataset(Dataset):
                         torch.tensor([pv[6], pv[3], pv[4], pv[5]], dtype=torch.float32)
                     )
                     prev_j = torch.tensor(joints[t - 1], dtype=torch.float32)
-
                     next_pos, next_quat, next_j = root_pos, root_quat_wxyz, joints_t
                 else:
                     pv = root[t - 1]
@@ -407,14 +464,12 @@ class G1HybridPriorDataset(Dataset):
                         torch.tensor([pv[6], pv[3], pv[4], pv[5]], dtype=torch.float32)
                     )
                     prev_j = torch.tensor(joints[t - 1], dtype=torch.float32)
-
                     next_pos = torch.tensor(nx[0:3], dtype=torch.float32)
                     next_quat = quat_normalize(
                         torch.tensor([nx[6], nx[3], nx[4], nx[5]], dtype=torch.float32)
                     )
                     next_j = torch.tensor(joints[t + 1], dtype=torch.float32)
 
-            # velocities
             root_lin_vel, root_ang_vel, joint_velocities = self.__compute_velocities__(
                 prev=(prev_pos, prev_quat, prev_j, None),
                 cur=(root_pos, root_quat_wxyz, joints_t, None),
@@ -433,75 +488,41 @@ class G1HybridPriorDataset(Dataset):
                 "joint_vel": joint_velocities,
             }
 
-            # Optional EE
             if ee_pos is not None:
-                # ee_pos: (T,E,3)
                 frame["ee_pos"] = torch.tensor(ee_pos[t], dtype=torch.float32)
 
-            # Optional body positions
-            if body_pos is not None:
-                # body_pos: (T,K,3)
-                frame["body_pos"] = torch.tensor(body_pos[t], dtype=torch.float32)
+            if b_pos_t is not None:
+                frame["body_pos"] = b_pos_t
+                frame["body_quat"] = b_quat_t
+                frame["body_lin_vel"] = body_lin_vel
+                frame["body_ang_vel"] = body_ang_vel
 
             frames_list.append(frame)
 
         return frames_list
 
     def __compute_velocities__(self, prev, cur, nxt, dt, row, n_rows):
-        # prev/cur/nxt are tuples (root_pos, root_quat_wxyz, joints, ee_pos_or_none)
         if self.vel_mode == "central":
             if row == 0:
                 return self.__compute_velocities_forward__(
-                    cur_root_pos=cur[0],
-                    cur_root_quat_wxyz=cur[1],
-                    cur_joints=cur[2],
-                    next_root_pos=nxt[0],
-                    next_root_quat_wxyz=nxt[1],
-                    next_joints=nxt[2],
-                    dt=dt,
+                    cur[0], cur[1], cur[2], nxt[0], nxt[1], nxt[2], dt
                 )
             elif row == n_rows - 1:
                 return self.__compute_velocities_backward__(
-                    prev_root_pos=prev[0],
-                    prev_root_quat_wxyz=prev[1],
-                    prev_joints=prev[2],
-                    cur_root_pos=cur[0],
-                    cur_root_quat_wxyz=cur[1],
-                    cur_joints=cur[2],
-                    dt=dt,
+                    prev[0], prev[1], prev[2], cur[0], cur[1], cur[2], dt
                 )
             else:
                 return self.__compute_velocities_central__(
-                    prev_root_pos=prev[0],
-                    prev_root_quat_wxyz=prev[1],
-                    prev_joints=prev[2],
-                    cur_root_quat_wxyz=cur[1],
-                    next_root_pos=nxt[0],
-                    next_root_quat_wxyz=nxt[1],
-                    next_joints=nxt[2],
-                    dt=dt,
+                    prev[0], prev[1], prev[2], cur[1], nxt[0], nxt[1], nxt[2], dt
                 )
 
-        # backward mode
         if row == 0:
             return self.__compute_velocities_forward__(
-                cur_root_pos=cur[0],
-                cur_root_quat_wxyz=cur[1],
-                cur_joints=cur[2],
-                next_root_pos=nxt[0],
-                next_root_quat_wxyz=nxt[1],
-                next_joints=nxt[2],
-                dt=dt,
+                cur[0], cur[1], cur[2], nxt[0], nxt[1], nxt[2], dt
             )
         else:
             return self.__compute_velocities_backward__(
-                prev_root_pos=prev[0],
-                prev_root_quat_wxyz=prev[1],
-                prev_joints=prev[2],
-                cur_root_pos=cur[0],
-                cur_root_quat_wxyz=cur[1],
-                cur_joints=cur[2],
-                dt=dt,
+                prev[0], prev[1], prev[2], cur[0], cur[1], cur[2], dt
             )
 
     def __compute_velocities_forward__(
@@ -519,8 +540,7 @@ class G1HybridPriorDataset(Dataset):
         q_next_norm = quat_normalize(next_root_quat_wxyz)
         v_body = quat_rotate_inv(q_cur, v_world)
 
-        q_rel = quat_mul(quat_inv(q_cur), q_next_norm)
-        q_rel = quat_normalize(q_rel)
+        q_rel = quat_normalize(quat_mul(quat_inv(q_cur), q_next_norm))
         w_body = quat_log(q_rel) / dt
 
         joint_vel = wrap_to_pi(next_joints - cur_joints) / dt
@@ -539,15 +559,12 @@ class G1HybridPriorDataset(Dataset):
     ):
         denom = 2.0 * dt
         v_world = (next_root_pos - prev_root_pos) / denom
-
         q_cur_norm = quat_normalize(cur_root_quat_wxyz)
         v_body = quat_rotate_inv(q_cur_norm, v_world)
 
         q_prev_norm = quat_normalize(prev_root_quat_wxyz)
         q_next_norm = quat_normalize(next_root_quat_wxyz)
-
-        q_rel = quat_mul(quat_inv(q_prev_norm), q_next_norm)
-        q_rel = quat_normalize(q_rel)
+        q_rel = quat_normalize(quat_mul(quat_inv(q_prev_norm), q_next_norm))
         w_body = quat_log(q_rel) / denom
 
         joint_vel = wrap_to_pi(next_joints - prev_joints) / denom
@@ -568,12 +585,45 @@ class G1HybridPriorDataset(Dataset):
         v_body = quat_rotate_inv(q_cur, v_world)
 
         q_prev = quat_normalize(prev_root_quat_wxyz)
-        q_rel = quat_mul(quat_inv(q_prev), q_cur)
-        q_rel = quat_normalize(q_rel)
+        q_rel = quat_normalize(quat_mul(quat_inv(q_prev), q_cur))
         w_body = quat_log(q_rel) / dt
 
         joint_vel = wrap_to_pi(cur_joints - prev_joints) / dt
         return v_body, w_body, joint_vel
+
+    def __compute_body_velocities__(
+        self, p_prev, p_cur, p_nxt, q_prev, q_cur, q_nxt, dt, row, n_rows
+    ):
+        if self.vel_mode == "central":
+            if row == 0:
+                return self.__body_vel_forward__(p_cur, p_nxt, q_cur, q_nxt, dt)
+            elif row == n_rows - 1:
+                return self.__body_vel_backward__(p_prev, p_cur, q_prev, q_cur, dt)
+            else:
+                return self.__body_vel_central__(p_prev, p_nxt, q_prev, q_nxt, dt)
+
+        if row == 0:
+            return self.__body_vel_forward__(p_cur, p_nxt, q_cur, q_nxt, dt)
+        else:
+            return self.__body_vel_backward__(p_prev, p_cur, q_prev, q_cur, dt)
+
+    def __body_vel_forward__(self, p_cur, p_nxt, q_cur, q_nxt, dt):
+        v = (p_nxt - p_cur) / dt
+        q_rel = quat_normalize(quat_mul(quat_inv(q_cur), q_nxt))
+        w = quat_log(q_rel) / dt
+        return v, w
+
+    def __body_vel_central__(self, p_prev, p_nxt, q_prev, q_nxt, dt):
+        v = (p_nxt - p_prev) / (2.0 * dt)
+        q_rel = quat_normalize(quat_mul(quat_inv(q_prev), q_nxt))
+        w = quat_log(q_rel) / (2.0 * dt)
+        return v, w
+
+    def __body_vel_backward__(self, p_prev, p_cur, q_prev, q_cur, dt):
+        v = (p_cur - p_prev) / dt
+        q_rel = quat_normalize(quat_mul(quat_inv(q_prev), q_cur))
+        w = quat_log(q_rel) / dt
+        return v, w
 
     def _count_rows(self, file_path: Path) -> int:
         with open(file_path, "r") as f:
@@ -613,7 +663,6 @@ class G1HybridPriorDataset(Dataset):
         if self.input_format == "npz":
             return self.dataset[idx]
 
-        # CSV
         if not self.lazy_load:
             return self.dataset[idx]
 

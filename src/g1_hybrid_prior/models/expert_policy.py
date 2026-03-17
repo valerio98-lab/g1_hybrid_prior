@@ -3,9 +3,8 @@ import torch.nn as nn
 import yaml
 
 from ..helpers import get_project_root
+from ..utils import Activation
 
-import math
-from dataclasses import dataclass
 from collections import OrderedDict
 
 
@@ -166,24 +165,23 @@ class Encoder(nn.Module):
         enc_cfg = cfg["low_level_expert_policy"]["encoder"]
         hidden_units = enc_cfg["units"]
         act_name = enc_cfg["activation"]
-        self.activation_fn = getattr(torch, act_name)
+        self.activation_fn = Activation(act_name)
 
         layers = []
         prev = obs_dim + target_dim
-        for unit in hidden_units:
-            layers.append(nn.Linear(prev, unit))
-            prev = unit
-        self.layers = nn.ModuleList(layers)
+        for unit in range(len(hidden_units) - 1):
+            layers.append(nn.Linear(prev, hidden_units[unit]))
+            layers.append(self.activation_fn)
+            prev = hidden_units[unit]
+        layers.append(
+            nn.Linear(prev, hidden_units[-1])
+        )  # ultimo layer lineare il latent non va schiacciato con la RELU, la ReLu schiaccerebbe i latenti obbligandoli a valori
+        # >=0 praticamente dimezzando lo spazio di rappresentazione.
+        self.net = nn.Sequential(*layers)
 
     def forward(self, obs: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
         x = torch.cat([obs, target], dim=-1)
-        for i, layer in enumerate(self.layers):
-            x = layer(x)
-            if i < len(self.layers) - 1:
-                x = self.activation_fn(
-                    x
-                )  # ultimo layer lineare il latent non va schiacciato con la RELU
-        return x
+        return self.net(x)
 
 
 class Decoder(nn.Module):
@@ -192,21 +190,21 @@ class Decoder(nn.Module):
         dec_cfg = cfg["low_level_expert_policy"]["decoder"]
         hidden_units = dec_cfg["units"]
         act_name = dec_cfg["activation"]
-        self.activation_fn = getattr(torch, act_name)
+        self.activation_fn = Activation(act_name)
 
         layers = []
-        in_size = obs_dim
+        in_size = latent_dim
         for unit in hidden_units:
-            layers.append(nn.Linear(in_size + latent_dim, unit))
+            layers.append(nn.Linear(in_size + obs_dim, unit))
             in_size = unit
         self.layers = nn.ModuleList(layers)
 
         self.mu_head = nn.Linear(in_size, action_dim)
 
     def forward(self, obs: torch.Tensor, latent: torch.Tensor) -> torch.Tensor:
-        x = obs
+        x = latent
         for layer in self.layers:
-            aug = torch.cat([x, latent], dim=-1)  # [features, z]
+            aug = torch.cat([obs, x], dim=-1)  # [features, z]
             x = self.activation_fn(layer(aug))
         mu = self.mu_head(x)  # (B, action_dim)
         return mu
@@ -218,12 +216,7 @@ class ValueHead(nn.Module):
         cfg = cfg["low_level_expert_policy"]["critic"]
         hidden_units = cfg["units"]
         act_name = cfg["activation"]
-        if act_name.lower() == "relu":
-            self.activation_fn = nn.ReLU()
-        else:
-            raise NotImplementedError(
-                f"Activation {act_name} not implemented in ValueHead"
-            )
+        self.activation_fn = Activation(act_name)
 
         layers = []
         prev = obs_dim + goal_dim

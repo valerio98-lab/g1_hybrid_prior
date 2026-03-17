@@ -1,7 +1,7 @@
 import torch
 import numpy as np
 from torch.utils.data import Dataset
-from pathlib import Path  # Aggiunto per gestire i path
+from pathlib import Path
 
 from ..helpers import quat_rotate_inv, quat_normalize, get_project_root
 from .robot_cfg import load_robot_cfg
@@ -18,7 +18,7 @@ class G1AMPDataset(Dataset):
         strict=True,
     ):
         self.device = device
-        self.file_path = Path(file_path)  # Convertiamo in Path object
+        self.file_path = Path(file_path)
 
         if not self.file_path.exists():
             raise FileNotFoundError(
@@ -30,10 +30,8 @@ class G1AMPDataset(Dataset):
                 f"[G1AMPDataset] Unsupported robot: {robot}. Only 'g1_amp' is supported with an AMP dataset."
             )
 
-        # 1. RACCOLTA LISTA FILE
         file_list = []
         if self.file_path.is_dir():
-            # Glob di tutti i .npz ordinati
             file_list = sorted(list(self.file_path.glob("*.npz")))
             if len(file_list) == 0:
                 raise FileNotFoundError(
@@ -47,8 +45,6 @@ class G1AMPDataset(Dataset):
                 )
             file_list = [self.file_path]
 
-        # 2. CARICAMENTO E CONCATENAZIONE
-        # Liste temporanee per accumulare i dati di tutti i file
         all_body_pos = []
         all_body_rot = []
         all_body_vel = []
@@ -56,7 +52,6 @@ class G1AMPDataset(Dataset):
         all_dof_pos = []
         all_dof_vel = []
 
-        # Variabili metadata (prese dal primo file)
         self.npz_dof_names = None
         self.npz_body_names = None
 
@@ -66,12 +61,10 @@ class G1AMPDataset(Dataset):
             try:
                 data = np.load(f, allow_pickle=True)
 
-                # Al primo file, settiamo i metadati e facciamo i check
                 if i == 0:
                     self.npz_dof_names = [str(x) for x in data["dof_names"].tolist()]
                     self.npz_body_names = [str(x) for x in data["body_names"].tolist()]
 
-                    # ---- Setup Permutazione (Fatto una sola volta basandosi sul primo file) ----
                     robots_yaml = str(get_project_root() / "config" / "robots.yaml")
                     self.robot_cfg = load_robot_cfg(robots_yaml, robot)
                     canonical = list(self.robot_cfg.joint_order)
@@ -93,17 +86,16 @@ class G1AMPDataset(Dataset):
                         perm, dtype=torch.long, device=device
                     )
                 else:
-                    # Check consistenza (opzionale ma consigliato): verifichiamo che gli altri file abbiano gli stessi giunti
                     curr_dof_names = [str(x) for x in data["dof_names"].tolist()]
                     if curr_dof_names != self.npz_dof_names:
                         print(
-                            f"[G1AMPDataset] ⚠️ WARNING: Mismatch in DOF names in file {f.name}. Skipping."
+                            f"[G1AMPDataset] WARNING: Mismatch in DOF names in file {f.name}. Skipping."
                         )
                         continue
                     curr_body_names = [str(x) for x in data["body_names"].tolist()]
                     if curr_body_names != self.npz_body_names:
                         print(
-                            f"[G1AMPDataset] ⚠️ WARNING: Mismatch in body names in file {f.name}. Skipping."
+                            f"[G1AMPDataset] WARNING: Mismatch in body names in file {f.name}. Skipping."
                         )
                         continue
 
@@ -127,7 +119,6 @@ class G1AMPDataset(Dataset):
         raw_dof_pos = np.concatenate(all_dof_pos, axis=0)
         raw_dof_vel = np.concatenate(all_dof_vel, axis=0)
 
-        # 3. CREAZIONE TENSORI (Come prima, ma sui dati concatenati)
         self.num_amp_obs_steps = num_amp_obs_steps
         assert (
             self.num_amp_obs_steps >= 2
@@ -154,11 +145,9 @@ class G1AMPDataset(Dataset):
         dof_pos_npz = torch.tensor(raw_dof_pos, dtype=torch.float32, device=device)
         dof_vel_npz = torch.tensor(raw_dof_vel, dtype=torch.float32, device=device)
 
-        # ---- Reorder DOF to canonical ----
         self.dof_pos = dof_pos_npz.index_select(1, self._perm_npz_to_canonical)
         self.dof_vel = dof_vel_npz.index_select(1, self._perm_npz_to_canonical)
 
-        # ---- Pre-processing for AMP obs (body frame) ----
         root_rot_norm = quat_normalize(self.root_rot_w)
         lin_vel_body = quat_rotate_inv(root_rot_norm, self.root_lin_vel_w)
         ang_vel_body = quat_rotate_inv(root_rot_norm, self.root_ang_vel_w)
@@ -194,14 +183,13 @@ class G1AMPDataset(Dataset):
         T = self.amp_batch.shape[0]
         K = self.num_amp_obs_steps
 
-        # scegli t in [K-1, T-1] così hai storia completa
         t = torch.randint(K - 1, T, (batch_size,), device=self.device)
 
-        # costruisci indici [t, t-1, ..., t-K+1]
+        # costruisce indici [t, t-1, ..., t-K+1] per l'AMP
         offsets = torch.arange(0, K, device=self.device)  # [0..K-1]
         idx = t.unsqueeze(1) - offsets.unsqueeze(0)  # (B, K)
 
-        # prendi frames e flattna: (B, K, 69) -> (B, K*69)
+        # prende i frames relativi a quell'indice e flatta: (B, K, 69) -> (B, K*69)
         batch = self.amp_batch.index_select(0, idx.reshape(-1)).reshape(
             batch_size, K, -1
         )

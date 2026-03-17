@@ -395,13 +395,15 @@ if __name__ == "__main__":
             else cfg.ee_link_names
         )
 
-        # IMPORTANT CHANGE:
-        # Pass ee_link_names always, so NPZ can include EE even if export_csv_ee=False.
+        body_links = args.body_links
+        if body_links is None and hasattr(cfg, "body_names") and cfg.body_names:
+            body_links = cfg.body_names  # fallback su yaml come per le EE
+
         augmenter = FKAugmenter(
             urdf_path=args.urdf,
             robot_cfg=cfg,
             ee_link_names=ee_names,
-            body_link_names=args.body_links,  # None => all BODY frames
+            body_link_names=body_links,
             export_body_quat=args.export_body_quat,
         )
 

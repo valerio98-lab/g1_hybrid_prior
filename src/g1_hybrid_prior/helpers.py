@@ -131,3 +131,15 @@ def get_angle_from_quat(q_wxyz: torch.Tensor) -> torch.Tensor:
     yaw = torch.atan2(2.0 * (w * z + x * y), 1.0 - 2.0 * (y * y + z * z))
 
     return roll, pitch, yaw
+
+
+# if __name__ == "__main__":
+#     import torch
+
+#     N = 10
+#     K = 20
+#     test = torch.randn(size=(N, K, 4))
+#     test2 = torch.randn(size=(N, K, 4))
+
+#     print(quat_mul(test, test2).shape)
+#     print(quat_inv(test).shape)
