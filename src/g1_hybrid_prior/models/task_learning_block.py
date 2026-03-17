@@ -103,7 +103,9 @@ class TaskLearningBlock(nn.Module):
         assert (
             num_active_codebooks <= self.total_codebooks
         ), f"num_active_codebooks={num_active_codebooks} > total={self.total_codebooks}"
-
+        print(
+            f"[TASK_LEARNING]: num active codebooks: {num_active_codebooks}", flush=True
+        )
         # Create trainable high-level policy
         self.high_level = HighLevelPolicy(
             s_dim=s_dim,
