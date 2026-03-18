@@ -125,6 +125,7 @@ class FKAugmenter:
 
         if len(self.body_frame_ids) > 0:
             print(f"[FK] BODY frames selected: {len(self.body_frame_ids)}")
+            print("[FK] BODY position are translated w.r.t the root position")
 
     def process_path(
         self,
@@ -259,9 +260,10 @@ class FKAugmenter:
 
             if export_npz_bodies:
                 # all selected body frames
+                root_translation = root_data[i, :3]
                 for k, fid in enumerate(self.body_frame_ids):
                     M = self.data.oMf[fid]
-                    body_pos[i, k, :] = M.translation
+                    body_pos[i, k, :] = M.translation - root_translation
                     if self.export_body_quat:
                         # rotation -> quaternion (x,y,z,w)
                         quat = pin.Quaternion(M.rotation)
@@ -272,7 +274,9 @@ class FKAugmenter:
                 # --- NEW: also store EE positions in NPZ ---
                 if ee_pos is not None:
                     for e, fid in enumerate(self.ee_frame_ids):
-                        ee_pos[i, e, :] = self.data.oMf[fid].translation
+                        ee_pos[i, e, :] = (
+                            self.data.oMf[fid].translation - root_translation
+                        )
 
         # 3) Save CSV (EE)
         if export_csv_ee:
