@@ -1,4 +1,3 @@
-# g1_hybrid_prior/imitation_trainer.py
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -481,20 +480,21 @@ class ImitationTrainer:
 
         ckpt_path = self.ckpt_dir / f"ckpt_{self.global_step:09d}.pt"
         self.save(ckpt_path)
-        self._rotate_checkpoints()
 
-    def _rotate_checkpoints(self) -> None:
-        k = int(self.cfg.keep_last_k)
-        if k <= 0:
-            return
+    #     self._rotate_checkpoints()
 
-        ckpts = sorted(self.ckpt_dir.glob("ckpt_*.pt"))
-        if len(ckpts) <= k:
-            return
+    # def _rotate_checkpoints(self) -> None:
+    #     k = int(self.cfg.keep_last_k)
+    #     if k <= 0:
+    #         return
 
-        to_delete = ckpts[:-k]
-        for p in to_delete:
-            try:
-                p.unlink()
-            except OSError:
-                pass
+    #     ckpts = sorted(self.ckpt_dir.glob("ckpt_*.pt"))
+    #     if len(ckpts) <= k:
+    #         return
+
+    #     to_delete = ckpts[:-k]
+    #     for p in to_delete:
+    #         try:
+    #             p.unlink()
+    #         except OSError:
+    #             pass

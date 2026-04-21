@@ -59,13 +59,13 @@ class ImitationBlock(nn.Module):
         goal_dim: int,
         action_dim: int,
         expert_decoder: Decoder = None,
+        net_cfg_path: str = None,
     ):
         super().__init__()
         self.s_dim = int(s_dim)
         self.goal_dim = int(goal_dim)
         self.action_dim = int(action_dim)
 
-        net_cfg_path = str(get_project_root() / "config/ImitationLearning.yaml")
         with open(net_cfg_path, "r") as f:
             net_cfg = yaml.safe_load(f)
         validate_imitation_cfg(net_cfg, self.s_dim, self.goal_dim, self.action_dim)

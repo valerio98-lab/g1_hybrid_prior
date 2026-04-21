@@ -42,6 +42,7 @@ class TaskLearningBlock(nn.Module):
         action_dim: int,
         imitation_ckpt_path: str,
         expert_ckpt_path: str,
+        cfg_path: str,
     ):
         super().__init__()
         self.s_dim = s_dim
@@ -50,7 +51,6 @@ class TaskLearningBlock(nn.Module):
         self.action_dim = action_dim
 
         # Load config to get number of active codebooks
-        cfg_path = get_project_root() / "config/TaskLearning.yaml"
         with open(cfg_path, "r") as f:
             cfg = yaml.safe_load(f)
 
