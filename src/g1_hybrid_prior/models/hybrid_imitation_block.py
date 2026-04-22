@@ -266,16 +266,16 @@ class ActionDecoder(nn.Module):
 
     def _build_net(self):
         layers = []
-        in_size = self.obs_dim
+        in_size = self.latent_dim
         for h in self.hidden_units:
-            layers.append(nn.Linear(in_size + self.latent_dim, h))
+            layers.append(nn.Linear(in_size + self.obs_dim, h))
             in_size = h
         self.layers = nn.ModuleList(layers)
         self.mu_head = nn.Linear(in_size, self.action_dim)
 
     def forward(self, s_cur: torch.Tensor, z_hat: torch.Tensor) -> torch.Tensor:
-        x = s_cur
+        x = z_hat
         for layer in self.layers:
-            x = layer(torch.cat([x, z_hat], dim=-1))
+            x = layer(torch.cat([s_cur, x], dim=-1))
             x = self.activation(x)
         return self.mu_head(x)

@@ -43,6 +43,7 @@ class TaskLearningBlock(nn.Module):
         imitation_ckpt_path: str,
         expert_ckpt_path: str,
         cfg_path: str,
+        imitation_cfg_path: str
     ):
         super().__init__()
         self.s_dim = s_dim
@@ -81,6 +82,7 @@ class TaskLearningBlock(nn.Module):
             goal_dim=goal_dim,
             action_dim=action_dim,
             expert_decoder=expert_decoder,
+            net_cfg_path=imitation_cfg_path
         )
 
         # Running mean/std for normalizing observations
@@ -110,6 +112,7 @@ class TaskLearningBlock(nn.Module):
             goal_dim=task_goal_dim,
             codebook_size=self.codebook_size,
             num_active_codebooks=num_active_codebooks,
+            cfg_path=cfg_path,
         )
 
     def _load_imitation_checkpoint_and_normalization_stats(
@@ -255,7 +258,7 @@ class TaskLearningBlock(nn.Module):
 
         # Decode action (frozen)
         with torch.no_grad():
-            action = self.imitation.decoder(s, z_bar)
+            action = self.imitation.decoder(s_norm, z_bar)
 
         return {
             "action": action,
@@ -305,11 +308,13 @@ class TaskLearningBlock(nn.Module):
         Returns:
                 log_prob, entropy, reconstructed action
         """
+        s_norm = self._normalize_s(s)
+
         with torch.no_grad():
-            zp = self.imitation.prior(s)
+            zp = self.imitation.prior(s_norm)
 
         # Get current policy logits
-        hl_out = self.high_level(s, g_task)
+        hl_out = self.high_level(s_norm, g_task)
         logits = hl_out["logits"]
 
         # Compute log_prob and entropy for old actions
@@ -322,7 +327,7 @@ class TaskLearningBlock(nn.Module):
         with torch.no_grad():
             y_bar = self._lookup_codebook(old_indices)
             z_bar = y_bar + zp
-            action = self.imitation.decoder(s, z_bar)
+            action = self.imitation.decoder(s_norm, z_bar)
 
         return {
             "log_prob": log_prob_total,
@@ -344,6 +349,7 @@ class HighLevelPolicy(nn.Module):
         goal_dim: int,
         codebook_size: int,
         num_active_codebooks: int = 1,
+        cfg_path: str = None,
     ):
         super().__init__()
         self.s_dim = s_dim
@@ -352,7 +358,6 @@ class HighLevelPolicy(nn.Module):
         self.num_active_codebooks = num_active_codebooks
 
         # Load network architecture from config
-        cfg_path = get_project_root() / "config/TaskLearning.yaml"
         with open(cfg_path, "r") as f:
             cfg = yaml.safe_load(f)
         hidden_units = cfg["task_learning_policy"]["high_level_policy"]["units"]
@@ -400,10 +405,10 @@ class TaskCritic(nn.Module):
         self,
         s_dim: int,
         goal_dim: int,
+        cfg_path: str = None,
     ):
         super().__init__()
         # Load architecture from config
-        cfg_path = get_project_root() / "config/TaskLearning.yaml"
         with open(cfg_path, "r") as f:
             cfg = yaml.safe_load(f)
 

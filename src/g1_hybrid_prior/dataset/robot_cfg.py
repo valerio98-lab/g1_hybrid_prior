@@ -11,6 +11,7 @@ class RobotCfg:
     quaternion_order: List[str]
     joint_order: List[str]  # ordered list of joint names in the CSV
     ee_link_names: List[str]  # names of end-effector links
+    body_names: List[str]  # names of body names
 
     @property
     def root_dim(self) -> int:
@@ -27,6 +28,10 @@ class RobotCfg:
     @property
     def expected_cols(self) -> int:
         return self.root_dim + self.dof
+
+    @property
+    def num_body(self) -> int:
+        return len(self.body_names)
 
 
 def load_robot_cfg(yaml_path: str, robot: str) -> RobotCfg:
@@ -45,4 +50,5 @@ def load_robot_cfg(yaml_path: str, robot: str) -> RobotCfg:
         quaternion_order=list(entry["quaternion_order"]),
         joint_order=list(entry["joint_order"]),
         ee_link_names=list(entry.get("ee_link_names", [])),
+        body_names=list(entry.get("body_names", [])),
     )
